@@ -831,14 +831,13 @@ function renderRulesModal(){
     <div class="modal-backdrop" id="rulesBackdrop">
       <div class="modal" style="max-width:440px;text-align:left;">
         <h3>How to Play EndLink</h3>
-        <p style="margin-bottom:10px;"><strong>Goal:</strong> be the first to empty your hand.</p>
-        <p style="margin-bottom:10px;"><strong>Your turn:</strong> either play a word or draw a Wildcard.</p>
-        <p style="margin-bottom:10px;"><strong>Playing a word:</strong> use letters from your hand plus the Core Card in the center (it can go at the start, middle, or end) to spell a word of 3+ letters. Words must be real English words — you'll see a live checkmark or cross as you build.</p>
-        <p style="margin-bottom:10px;"><strong>CarryOver:</strong> the LAST letter of your word becomes the new Core Card. Everything else you played is discarded. If that last letter is a Wildcard, it stays wild for the next player.</p>
-        <p style="margin-bottom:10px;"><strong>Wildcards:</strong> each player starts with 2 Wildcards, usable in any word as any letter. You can hold at most 2 at a time — draw more (instead of playing a word) once you've spent some, up to that cap.</p>
-        <p style="margin-bottom:10px;"><strong>Bonus draws:</strong> a 4-letter word draws you 1 extra card, a 5+ letter word draws 2. A 3-letter word draws none.</p>
-        <p style="margin-bottom:10px;"><strong>Scoring:</strong> when someone empties their hand, they score the value of every card left in everyone else's hand. Letters are worth however many of that letter are in the deck (common letters like E and A score high, rare ones like Q and Z score low). Wildcards are always worth 5.</p>
-        <p style="margin-bottom:0;"><strong>Winning:</strong> after a round, everyone gets a fresh hand — the player left holding the most points goes first next round. First player to ${WINNING_SCORE} points wins the game.</p>
+        <p style="margin-bottom:10px;"><strong>Goal:</strong> Be the first person to play all the letters from your hand.</p>
+        <p style="margin-bottom:10px;"><strong>On Your Turn:</strong> Either play a word or draw a Wildcard.</p>
+        <p style="margin-bottom:10px;"><strong>Playing a word:</strong> Each word has to be 3 letters or more and contain the last letter from the previous played work. That's the letter at the top and it can go at the start, middle, or end. If the last letter is a Wildcard, it stays wild for the next player</p>
+        <p style="margin-bottom:10px;"><strong>Wildcards:</strong> Each player starts with 2 Wildcards, and they can be played as any letter. If you can't play a word you can draw a wildcard, up to a maximum of two in your hand.</p>
+        <p style="margin-bottom:10px;"><strong>Extra letters:</strong> If you play a 4-letter word, draw 1 extra letters, a 5+ letter word draws 2. A 3-letter word draws none.</p>
+        <p style="margin-bottom:10px;"><strong>Scoring:</strong> When someone empties their hand, they score the value of every card left in everyone else's hand. Letters are worth however many of that letter are in the deck (common letters like E and A score high, rare ones like Q and Z score low). Wildcards are always worth 5.</p>
+        <p style="margin-bottom:0;"><strong>Winning:</strong> After a round, everyone gets a fresh hand — the player left holding the most points goes first next round. First player to ${WINNING_SCORE} points wins the game.</p>
         <button class="btn btn-gold" id="closeRulesBtn" style="margin-top:16px;">Got it</button>
       </div>
     </div>
