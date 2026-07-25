@@ -869,14 +869,13 @@ function renderRulesModal(){
     <div class="modal-backdrop" id="rulesBackdrop">
       <div class="modal" style="max-width:440px;text-align:left;">
         <h3>How to Play EndLink</h3>
-        <p style="margin-bottom:10px;"><strong>Goal:</strong> Be the first person to play all the letters from your hand.</p>
+        <p style="margin-bottom:10px;"><strong>Goal:</strong>Play all the letters from your hand. The first player to ${WINNING_SCORE} points wins.</p>
         <p style="margin-bottom:10px;"><strong>On Your Turn:</strong> Either play a word or draw a Wildcard. You start with 2 Wildcards, and that's the maximum you're allowed to hold at one time.</p>
-        <p style="margin-bottom:10px;"><strong>Playing a word:</strong> Each word has to be 3 letters or more and contain the last letter from the previous played word.</p>
+        <p style="margin-bottom:10px;"><strong>Playing a word:</strong> Each word has to be at least 3 letters and contain the last letter from the previous played word.</p>
         <p style="margin-bottom:10px;"><strong>Extra letters:</strong> If you play a 4-letter word, draw 1 extra letter; a 5+ letter word draws 2. A 3-letter word draws none.</p>
-        <p style="margin-bottom:10px;"><strong>Scoring your words:</strong> Every word scores one point for every letter you play, except the last letter which has to be used by the next player.</p>
-        <p style="margin-bottom:10px;"><strong>Wildcard scoring:</strong> Wildcards never score points when you play them — but if a Wildcard is still sitting in an opponent's hand when the round ends, it's worth 5 bonus points to the round winner.</p>
-        <p style="margin-bottom:10px;"><strong>Ending a round:</strong> When someone empties their hand, the round ends immediately and they score one point for every card left in everyone else's hand (plus the 5-point Wildcard bonus above).</p>
-        <p style="margin-bottom:0;"><strong>Winning:</strong> After a round, everyone gets a fresh hand — the player left holding the most points goes first next round. The player with the highest total score at the end of the game wins — the first to ${WINNING_SCORE} points gets there first.</p>
+        <p style="margin-bottom:10px;"><strong>Scoring your words:</strong> Every word scores one point for every letter you play, except the last letter which has to be used by the next player. Wildcards don't score points when you play them.</p>
+        <p style="margin-bottom:10px;"><strong>Ending a round:</strong> When someone plays all the letters from their hand, the round ends immediately. They score one point for every letter left in everyone else's hand, plus the 5 points for every Wildcard.</p>
+        <p style="margin-bottom:0;"><strong>Next round:</strong> After a round, everyone gets a fresh hand — the player left holding the most points goes first next round. </p>
         <button class="btn btn-gold" id="closeRulesBtn" style="margin-top:16px;">Got it</button>
       </div>
     </div>
