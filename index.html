@@ -413,14 +413,11 @@ function dealRound(){
 
 function currentPlayer(){ return state.players[state.currentPlayer]; }
 
-/* points a single card is worth: letters are worth how many times that letter appears in the deck; wildcards are worth 5 */
-function letterValue(card){
-  if(card.kind === "letter") return LETTER_DISTRIBUTION[card.letter] || 0;
-  return 5;
-}
-
-function handValue(p){
-  return p.hand.reduce((sum,c)=>sum+letterValue(c),0) + p.wildcards.length*5;
+/* end-of-round value of a player's remaining hand: 1 point per card left, plus a
+   5-point bonus for every Wildcard still in hand (no letter-value calculations
+   are used anymore — scoring only depends on card counts). */
+function remainingHandPoints(p){
+  return p.hand.length + p.wildcards.length*5;
 }
 
 function displayLetter(card){
@@ -693,7 +690,7 @@ function commitWord(){
   const p = currentPlayer();
   const word = wordString();
   const lastCard = state.builder[state.builder.length-1];
-  const discardedCards = state.builder.filter(c => c !== lastCard);
+  const playedCards = state.builder.filter(c => c !== lastCard);
 
   // snapshot the play (letters + which tiles were wildcards/the core) so the
   // next player's "pass the device" screen can show it before they see their hand
@@ -706,6 +703,11 @@ function commitWord(){
     }))
   };
 
+  // Score the word: 1 point for every letter played except the final letter
+  // (which becomes the new Core Card). Wildcards never score.
+  const wordPoints = playedCards.filter(c => c.kind === "letter").length;
+  p.score += wordPoints;
+
   // remove used cards from hand, mark wildcard loadout as spent if used (any wildcard in builder that isn't core-carried forward and came from hand)
   const usedFromHand = state.builder.filter(c => c !== state.core);
   p.hand = p.hand.filter(c => !usedFromHand.includes(c));
@@ -714,9 +716,11 @@ function commitWord(){
     if(c.kind === "wildcard") p.wildcards = p.wildcards.filter(w => w !== c);
   });
 
-  // discard everything except the last tile
-  discardedCards.forEach(c=>{
-    state.discard.push(c);
+  // discard played letter cards (this feeds the reshuffle when the deck runs low).
+  // Wildcards are never discarded into the letter deck — once played they're
+  // simply returned to the (unlimited) Wildcard deck and cease to exist as a card.
+  playedCards.forEach(c=>{
+    if(c.kind === "letter") state.discard.push(c);
   });
 
   // set new core
@@ -731,7 +735,7 @@ function commitWord(){
     let worstVal = -1;
     state.players.forEach((pl, idx)=>{
       if(pl === p) return;
-      const val = handValue(pl);
+      const val = remainingHandPoints(pl);
       breakdown.push({ name: pl.name, value: val });
       roundPoints += val;
       if(val > worstVal){ worstVal = val; worstIdx = idx; }
@@ -754,7 +758,7 @@ function commitWord(){
   state.coreInsertedAt = -1;
 
   const bonus = bonusDrawAmount(word.length);
-  let msg = p.name + " played \"" + word + "\". New Core Card: " + displayLetter(state.core) + ".";
+  let msg = p.name + " played \"" + word + "\" (+" + wordPoints + "). New Core Card: " + displayLetter(state.core) + ".";
   if(bonus > 0){
     const drawn = drawFromDeck(bonus);
     p.hand.push(...drawn);
@@ -870,8 +874,10 @@ function renderRulesModal(){
         <p style="margin-bottom:10px;"><strong>Playing a word:</strong> Each word has to be 3 letters or more and contain the last letter from the previous played word. That's the letter at the top, and it can go at the start, middle, or end. If the last letter is a Wildcard, it stays wild for the next player</p>
         <p style="margin-bottom:10px;"><strong>Wildcards:</strong> Each player starts with 2 Wildcards, and they can be played as any letter. If you can't play a word, you can draw a wildcard, up to a maximum of two in your hand.</p>
         <p style="margin-bottom:10px;"><strong>Extra letters:</strong> If you play a 4-letter word, draw 1 extra letter; a 5+ letter word draws 2. A 3-letter word draws none.</p>
-        <p style="margin-bottom:10px;"><strong>Scoring:</strong> When someone empties their hand, they score the value of every card left in everyone else's hand. Letters are worth however many of that letter are in the deck (common letters like E and A score high, rare ones like Q and Z score low). Wildcards are always worth 5.</p>
-        <p style="margin-bottom:0;"><strong>Winning:</strong> After a round, everyone gets a fresh hand — the player left holding the most points goes first next round. The first player to ${WINNING_SCORE} points wins the game.</p>
+        <p style="margin-bottom:10px;"><strong>Scoring your words:</strong> Every word scores one point for every letter you play, except the letter that becomes the new Core Card — that one doesn't score. Score by collecting your played letters: CAT scores 2, STONE scores 4, and so on.</p>
+        <p style="margin-bottom:10px;"><strong>Wildcard scoring:</strong> Wildcards never score points when you play them — but if a Wildcard is still sitting in an opponent's hand when the round ends, it's worth 5 bonus points to the round winner.</p>
+        <p style="margin-bottom:10px;"><strong>Ending a round:</strong> When someone empties their hand, the round ends immediately and they score one point for every card left in everyone else's hand (plus the 5-point Wildcard bonus above).</p>
+        <p style="margin-bottom:0;"><strong>Winning:</strong> After a round, everyone gets a fresh hand — the player left holding the most points goes first next round. The player with the highest total score at the end of the game wins — the first to ${WINNING_SCORE} points gets there first.</p>
         <button class="btn btn-gold" id="closeRulesBtn" style="margin-top:16px;">Got it</button>
       </div>
     </div>
