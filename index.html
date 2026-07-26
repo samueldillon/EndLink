@@ -333,9 +333,24 @@ let state = {
   nextStarter: 0,         // player index who starts the next round
   gameWinner: null,
   showRules: false,
+  _aiTurnPlayer: -1, // index of the player whose AI turn is currently mid-execution, or -1
 };
 
 const WINNING_SCORE = 50;
+
+// Returns the highest-scoring player who has reached WINNING_SCORE, or null.
+// Used both at round-end and after ordinary word plays, since a player's
+// score can cross the threshold either way (round-end bonus points, or
+// plain per-word points on a turn where their hand doesn't empty).
+function checkForWinner(){
+  let champion = null;
+  state.players.forEach(pl=>{
+    if(pl.score >= WINNING_SCORE && (!champion || pl.score > champion.score)){
+      champion = pl;
+    }
+  });
+  return champion;
+}
 
 let uid = 0;
 function nextId(){ return uid++; }
@@ -559,6 +574,15 @@ function assembleBuilder(word, plan){
    or pass if truly stuck. */
 function playAITurn(){
   const p = currentPlayer();
+  // Mark which player this AI turn belongs to. Some paths below (showToast,
+  // via commitWord/drawCard/the pass branch) call render() synchronously
+  // *before* advanceTurn() runs, while we're still on this same player's
+  // "gate" screen. renderGate()'s scheduling check uses this marker (rather
+  // than just _aiScheduled) so those intermediate renders don't sneak in a
+  // duplicate timer for this same turn — which would otherwise consume the
+  // "not yet scheduled" slot and leave the *next* player's turn never
+  // scheduled at all once advanceTurn() moves on.
+  state._aiTurnPlayer = state.currentPlayer;
   const found = planAIMove(p);
   if(found){
     const assembled = assembleBuilder(found.word, found.plan);
@@ -566,6 +590,7 @@ function playAITurn(){
       state.builder = assembled.builder;
       state.coreInsertedAt = assembled.coreInsertedAt;
       commitWord();
+      state._aiTurnPlayer = -1;
       return;
     }
   }
@@ -575,6 +600,7 @@ function playAITurn(){
     showToast(p.name + " couldn't find a play and passes.");
     advanceTurn();
   }
+  state._aiTurnPlayer = -1;
 }
 
 function showToast(msg, ms=2600){
@@ -744,8 +770,13 @@ function commitWord(){
     state.lastRound = { winner: p.name, points: roundPoints, breakdown };
     state.nextStarter = worstIdx;
 
-    if(p.score >= WINNING_SCORE){
-      state.gameWinner = p.name;
+    // Check every player's score, not just the one who emptied their hand —
+    // other players' scores can also have crossed WINNING_SCORE (e.g. from
+    // an earlier round) even though only p's score changed this turn.
+    const champion = checkForWinner();
+
+    if(champion){
+      state.gameWinner = champion.name;
       state.screen = "gameOver";
     } else {
       state.screen = "roundEnd";
@@ -896,7 +927,7 @@ function renderGate(){
       </div>
       ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
     `;
-    if(!state._aiScheduled){
+    if(!state._aiScheduled && state._aiTurnPlayer !== state.currentPlayer){
       state._aiScheduled = true;
       const scheduledPlayer = state.currentPlayer;
       setTimeout(()=>{
@@ -904,10 +935,14 @@ function renderGate(){
         // Only actually play if it's still this same CPU's turn.
         // (playAITurn's "no word found" paths call showToast(), which
         // renders synchronously *before* advanceTurn() runs — that
-        // extra render() call used to sneak in a second, unguarded
-        // schedule here. Without this check, that leftover timer would
-        // later fire and play whichever player was current by then,
-        // including human players.)
+        // extra render() call used to sneak in a second schedule here.
+        // The state._aiTurnPlayer check above stops that: while playAITurn()
+        // is still running for a player, state._aiTurnPlayer equals
+        // state.currentPlayer, so those intermediate renders are skipped.
+        // Once advanceTurn() moves to a new player, the mismatch lets the
+        // real next turn get scheduled. Without both guards, a stray
+        // duplicate timer for the old player could consume this "not yet
+        // scheduled" slot and leave the next CPU's turn never scheduled.)
         if(state.screen === "gate" && state.currentPlayer === scheduledPlayer){
           playAITurn();
         }
