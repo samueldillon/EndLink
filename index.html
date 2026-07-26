@@ -6,6 +6,9 @@
 <title>EndLink — Prototype</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Fredoka:wght@500;600;700&family=Nunito:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<!-- Firebase (compat build — simplest for a plain script tag, no bundler) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --ink:#4A3B63;
@@ -313,10 +316,71 @@ const LETTER_DISTRIBUTION = {
 
 
 
+/* ============================= ONLINE MULTIPLAYER SETUP =============================
+   To let people play on their own phones (instead of passing one device around),
+   this game can sync through a Firebase Firestore project. Steps:
+
+     1. https://console.firebase.google.com -> "Add project" -> any name is fine
+        (Analytics can be turned off). Finish the wizard.
+     2. Left sidebar -> Build -> Firestore Database -> Create database ->
+        "Start in test mode" -> pick any region.
+     3. Left sidebar -> gear icon -> Project settings -> scroll to "Your apps" ->
+        click the </> (web) icon -> give it any nickname -> skip Hosting.
+        It will show a `firebaseConfig` object — copy it and paste it in below,
+        replacing the placeholder values.
+     4. (Recommended — test-mode rules expire after 30 days) In Firestore ->
+        Rules, replace the default rules with:
+          rules_version = '2';
+          service cloud.firestore {
+            match /databases/{database}/documents {
+              match /rooms/{roomCode} {
+                allow read, write: if true;
+              }
+            }
+          }
+        This scopes open access to just the `rooms` collection this game uses.
+        Anyone who knows a room's 4-letter code could read or write that one
+        room — fine for a casual game with friends, not meant for anything
+        sensitive.
+     5. Save this file. "Play Online" will now work.
+
+   Note on privacy: hands are kept private the simple way — this client just
+   never displays anyone else's letters — but the full game state (everyone's
+   hand included) does live in the shared Firestore document, so a
+   technically-inclined player could still inspect it via browser dev tools.
+*/
+const firebaseConfig = {
+  apiKey: "REPLACE_WITH_YOUR_API_KEY",
+  authDomain: "REPLACE_WITH_YOUR_PROJECT.firebaseapp.com",
+  projectId: "REPLACE_WITH_YOUR_PROJECT",
+  storageBucket: "REPLACE_WITH_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "REPLACE_WITH_YOUR_SENDER_ID",
+  appId: "REPLACE_WITH_YOUR_APP_ID",
+};
+const FIREBASE_CONFIGURED = firebaseConfig.apiKey !== "REPLACE_WITH_YOUR_API_KEY";
+let db = null;
+if(FIREBASE_CONFIGURED){
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+}
+
 /* ============================= STATE ============================= */
 
 let state = {
-  screen: "setup",       // setup | gate | play | roundEnd | gameOver
+  screen: "home",        // home | onlineSetup | lobby | setup | gate | play | onlinePlay | roundEnd | gameOver
+  mode: "local",         // "local" (pass & play) | "online" (each on own phone, via Firebase)
+  online: {
+    code: null,            // room code, e.g. "BQXT"
+    clientId: null,        // stable per-device id, persisted in localStorage
+    mySeat: -1,             // my index into state.players once a game starts
+    isHost: false,
+    seats: [],              // [{name, isCPU, clientId}] mirrors the lobby doc
+    maxPlayers: 4,
+    myName: "",
+    joinCodeInput: "",
+    error: null,
+    unsub: null,            // Firestore listener detach function
+  },
   playerCount: 2,
   names: ["Player 1","Player 2","Player 3","Player 4"],
   cpu: [false,false,false,false,false,false,false,false], // per-slot "is computer player" toggle from setup
@@ -378,19 +442,18 @@ function shuffle(arr){
 
 function startGame(){
   state.players = [];
-  const totalCPUs = state.cpu.slice(0, state.playerCount).filter(Boolean).length;
   let cpuSeen = 0;
   for(let i=0;i<state.playerCount;i++){
     const isCPU = !!state.cpu[i];
     let defaultName;
     if(isCPU){
       cpuSeen++;
-      defaultName = totalCPUs > 1 ? ("Computer " + cpuSeen) : "Computer";
+      defaultName = cpuSeen === 1 ? "Computer" : ("Computer " + cpuSeen);
     } else {
       defaultName = "Player " + (i+1);
     }
     state.players.push({
-      name: state.names[i] && state.names[i].trim() ? state.names[i].trim() : defaultName,
+      name: (!isCPU && state.names[i] && state.names[i].trim()) ? state.names[i].trim() : defaultName,
       hand: [],
       wildcards: [],
       score: 0,
@@ -422,6 +485,222 @@ function dealRound(){
   state.builder = [];
   state.coreInsertedAt = -1;
   state.lastPlay = null;
+}
+
+/* ============================= ONLINE MULTIPLAYER ============================= */
+
+function getClientId(){
+  let id = localStorage.getItem("endlink_client_id");
+  if(!id){
+    id = "c_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem("endlink_client_id", id);
+  }
+  return id;
+}
+
+function makeRoomCode(){
+  const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // no I/O — avoids confusion
+  let code = "";
+  for(let i=0;i<4;i++) code += letters[Math.floor(Math.random()*letters.length)];
+  return code;
+}
+
+function createRoom(){
+  if(!FIREBASE_CONFIGURED){ state.online.error = "Firebase isn't set up yet — see the setup comment near the top of this file's <script>."; render(); return; }
+  const name = (state.online.myName||"").trim() || "Player 1";
+  const maxPlayers = state.online.maxPlayers;
+  const code = makeRoomCode();
+  const clientId = getClientId();
+  const seats = Array.from({length:maxPlayers}, ()=>({name:null,isCPU:false,clientId:null}));
+  seats[0] = { name, isCPU:false, clientId };
+  db.collection("rooms").doc(code).set({
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    maxPlayers, hostClientId: clientId, status: "lobby", seats, game: null,
+  }).then(()=>{
+    localStorage.setItem("endlink_online_session", JSON.stringify({code, clientId}));
+    state.online.code = code;
+    state.online.clientId = clientId;
+    state.online.mySeat = 0;
+    state.online.isHost = true;
+    state.online.error = null;
+    state.screen = "lobby";
+    listenToRoom(code);
+    render();
+  }).catch(err=>{
+    state.online.error = "Couldn't create room: " + err.message;
+    render();
+  });
+}
+
+function joinRoom(){
+  if(!FIREBASE_CONFIGURED){ state.online.error = "Firebase isn't set up yet — see the setup comment near the top of this file's <script>."; render(); return; }
+  const code = (state.online.joinCodeInput||"").trim().toUpperCase();
+  const name = (state.online.myName||"").trim() || "Player";
+  if(!code){ state.online.error = "Enter a room code."; render(); return; }
+  const clientId = getClientId();
+  const ref = db.collection("rooms").doc(code);
+  db.runTransaction(async (tx)=>{
+    const doc = await tx.get(ref);
+    if(!doc.exists) throw new Error("No room with that code.");
+    const data = doc.data();
+    if(data.status !== "lobby") throw new Error("That game has already started.");
+    const seats = data.seats.slice();
+    let seatIdx = seats.findIndex(s=>s.clientId === clientId);
+    if(seatIdx === -1){
+      seatIdx = seats.findIndex(s=>!s.clientId);
+      if(seatIdx === -1) throw new Error("That room is full.");
+      seats[seatIdx] = { name, isCPU:false, clientId };
+      tx.update(ref, { seats });
+    }
+    return { seatIdx, hostClientId: data.hostClientId };
+  }).then(({seatIdx, hostClientId})=>{
+    localStorage.setItem("endlink_online_session", JSON.stringify({code, clientId}));
+    state.online.code = code;
+    state.online.clientId = clientId;
+    state.online.mySeat = seatIdx;
+    state.online.isHost = (clientId === hostClientId);
+    state.online.error = null;
+    state.screen = "lobby";
+    listenToRoom(code);
+    render();
+  }).catch(err=>{
+    state.online.error = err.message;
+    render();
+  });
+}
+
+/* host-only: fill or clear an empty lobby seat with a Computer player */
+function setSeatCPU(seatIdx, isCPU){
+  if(!state.online.isHost) return;
+  const seats = state.online.seats.slice();
+  seats[seatIdx] = isCPU
+    ? { name: null, isCPU: true, clientId: "CPU_" + seatIdx + "_" + Date.now() }
+    : { name: null, isCPU: false, clientId: null };
+  db.collection("rooms").doc(state.online.code).update({ seats });
+}
+
+/* host-only: deal the first hand and move the room from "lobby" to "playing" */
+function startOnlineGame(){
+  if(!state.online.isHost) return;
+  const seats = state.online.seats;
+  if(seats.some(s=>!s.clientId && !s.isCPU)) return; // guard — button should already be disabled
+
+  state.players = [];
+  let cpuSeen = 0;
+  seats.forEach((s,i)=>{
+    if(s.isCPU){
+      cpuSeen++;
+      const defaultName = cpuSeen === 1 ? "Computer" : ("Computer " + cpuSeen);
+      state.players.push({ name: defaultName, hand:[], wildcards:[], score:0, isCPU:true });
+    } else {
+      state.players.push({ name: s.name || ("Player " + (i+1)), hand:[], wildcards:[], score:0, isCPU:false });
+    }
+  });
+  state.lastRound = null;
+  state.gameWinner = null;
+  dealRound();
+  state.currentPlayer = 0;
+  state.screen = "onlinePlay";
+  syncOnline();
+  render();
+}
+
+/* subscribes this client to the room doc; every field it reads back into
+   `state` mirrors what's on Firestore, so all phones converge on the same view */
+function listenToRoom(code){
+  if(state.online.unsub) state.online.unsub();
+  state.online.unsub = db.collection("rooms").doc(code).onSnapshot(doc=>{
+    if(!doc.exists){
+      state.online.error = "This room no longer exists.";
+      state.screen = "onlineSetup";
+      render();
+      return;
+    }
+    const data = doc.data();
+    state.online.seats = data.seats;
+    state.online.maxPlayers = data.maxPlayers;
+    state.online.isHost = data.hostClientId === state.online.clientId;
+
+    if(data.status === "lobby"){
+      state.screen = "lobby";
+    } else {
+      applyIncomingGame(data.game);
+      state.builder = [];
+      state.coreInsertedAt = -1;
+      if(data.status === "playing") state.screen = "onlinePlay";
+      else if(data.status === "roundEnd") state.screen = "roundEnd";
+      else if(data.status === "gameOver") state.screen = "gameOver";
+    }
+    render();
+  });
+}
+
+function applyIncomingGame(g){
+  if(!g) return;
+  state.players = g.players;
+  state.deck = g.deck;
+  state.discard = g.discard;
+  state.core = g.core;
+  state.currentPlayer = g.currentPlayer;
+  state.lastRound = g.lastRound;
+  state.nextStarter = g.nextStarter;
+  state.gameWinner = g.gameWinner;
+}
+
+/* pushes the local, already-mutated shared game fields up to Firestore so
+   every other phone's listener picks up the change. Safe to call from local
+   (pass & play) code paths too — it's a no-op unless mode is "online". */
+function syncOnline(){
+  if(state.mode !== "online" || !state.online.code || !db) return;
+  const status = state.screen === "roundEnd" ? "roundEnd" : state.screen === "gameOver" ? "gameOver" : "playing";
+  db.collection("rooms").doc(state.online.code).update({
+    status,
+    game: {
+      players: state.players,
+      deck: state.deck,
+      discard: state.discard,
+      core: state.core,
+      currentPlayer: state.currentPlayer,
+      lastRound: state.lastRound,
+      nextStarter: state.nextStarter,
+      gameWinner: state.gameWinner,
+    },
+  }).catch(err=>{
+    console.error("EndLink sync error:", err);
+    showToast("Connection hiccup — your move may not have reached everyone yet.");
+  });
+}
+
+function leaveOnlineRoom(){
+  if(state.online.unsub){ state.online.unsub(); }
+  localStorage.removeItem("endlink_online_session");
+  state.mode = "local";
+  state.online = { code:null, clientId:null, mySeat:-1, isHost:false, seats:[], maxPlayers:4, myName:"", joinCodeInput:"", error:null, unsub:null };
+  state.screen = "home";
+  render();
+}
+
+/* best-effort: if this phone already had a room open (e.g. the page was
+   refreshed), silently rejoin it instead of dropping back to the home screen */
+function tryResumeSession(){
+  if(!FIREBASE_CONFIGURED) return;
+  const raw = localStorage.getItem("endlink_online_session");
+  if(!raw) return;
+  let saved;
+  try{ saved = JSON.parse(raw); } catch(e){ return; }
+  if(!saved || !saved.code || !saved.clientId) return;
+  state.mode = "online";
+  state.online.code = saved.code;
+  state.online.clientId = saved.clientId;
+  db.collection("rooms").doc(saved.code).get().then(doc=>{
+    if(!doc.exists){ localStorage.removeItem("endlink_online_session"); return; }
+    const data = doc.data();
+    const seatIdx = data.seats.findIndex(s=>s.clientId === saved.clientId);
+    if(seatIdx === -1){ localStorage.removeItem("endlink_online_session"); return; }
+    state.online.mySeat = seatIdx;
+    state.online.isHost = data.hostClientId === saved.clientId;
+    listenToRoom(saved.code);
+  }).catch(()=>{});
 }
 
 /* ============================= HELPERS ============================= */
@@ -573,6 +852,7 @@ function assembleBuilder(word, plan){
 /* Runs one full CPU turn: find the best word it can play, or draw a wildcard,
    or pass if truly stuck. */
 function playAITurn(){
+  if(state.mode === "online" && !state.online.isHost) return;
   const p = currentPlayer();
   // Mark which player this AI turn belongs to. Some paths below (showToast,
   // via commitWord/drawCard/the pass branch) call render() synchronously
@@ -687,6 +967,7 @@ function bonusDrawAmount(wordLength){
 }
 
 function attemptSubmit(){
+  if(state.mode === "online" && state.online.mySeat !== state.currentPlayer) return;
   if(!canSubmit()) return;
   if(state.coreInsertedAt === -1){
     state.coreShake = true;
@@ -781,6 +1062,7 @@ function commitWord(){
     } else {
       state.screen = "roundEnd";
     }
+    syncOnline();
     render();
     return;
   }
@@ -800,6 +1082,7 @@ function commitWord(){
 }
 
 function drawCard(){
+  if(state.mode === "online" && state.online.mySeat !== state.currentPlayer) return;
   const p = currentPlayer();
   if(p.wildcards.length >= 2){
     showToast("Wildcard loadout is full (2/2) — play a word instead.");
@@ -815,7 +1098,11 @@ function advanceTurn(){
   state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
   state.builder = [];
   state.coreInsertedAt = -1;
-  state.screen = "gate";
+  if(state.mode === "online"){
+    syncOnline();
+  } else {
+    state.screen = "gate";
+  }
   render();
 }
 
@@ -824,9 +1111,13 @@ function advanceTurn(){
 const app = document.getElementById("app");
 
 function render(){
+  if(state.screen === "home") return renderHome();
+  if(state.screen === "onlineSetup") return renderOnlineSetup();
+  if(state.screen === "lobby") return renderLobby();
   if(state.screen === "setup") return renderSetup();
   if(state.screen === "gate") return renderGate();
   if(state.screen === "play") return renderPlay();
+  if(state.screen === "onlinePlay") return renderOnlinePlay();
   if(state.screen === "roundEnd") return renderRoundEnd();
   if(state.screen === "gameOver") return renderGameOver();
 }
@@ -838,6 +1129,124 @@ function miniLogo(){
 function scoreboardRows(){
   const sorted = [...state.players].sort((a,b)=>b.score-a.score);
   return sorted.map(pl=>`<div class="scoreboard-row"><span>${escapeHtml(pl.name)}</span><span class="pts mono">${pl.score}</span></div>`).join("");
+}
+
+function renderHome(){
+  app.innerHTML = `
+    <div class="screen">
+      <div class="wrap">
+        <div class="title-block">
+          <h1>End<span class="thread">Link</span></h1>
+          <p>Include the end of the last word in yours.</p>
+        </div>
+        <div class="panel">
+          <h2>How do you want to play?</h2>
+          <button class="btn btn-gold" id="localBtn" style="margin-bottom:12px;">Pass &amp; Play — one device</button>
+          <button class="btn btn-outline" id="onlineBtn">Play Online — everyone on their own phone</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("localBtn").onclick = ()=>{ state.mode = "local"; state.screen = "setup"; render(); };
+  document.getElementById("onlineBtn").onclick = ()=>{ state.mode = "online"; state.screen = "onlineSetup"; render(); };
+}
+
+function renderOnlineSetup(){
+  const warn = !FIREBASE_CONFIGURED
+    ? `<p style="color:var(--brick);font-weight:700;font-size:13px;margin-bottom:10px;">Firebase isn't set up yet — see the setup comment near the top of the file's &lt;script&gt; for a step-by-step walkthrough, then paste your config into firebaseConfig.</p>`
+    : "";
+  app.innerHTML = `
+    <div class="screen">
+      <div class="wrap">
+        ${miniLogo()}
+        <div class="panel">
+          <h2>Play Online</h2>
+          ${warn}
+          <div class="name-row">
+            <div class="dot"></div>
+            <input value="${escapeAttr(state.online.myName)}" placeholder="Your name" id="onlineName" class="name-input" />
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Create a Room</h2>
+          <div class="stepper">
+            <button id="dec">–</button>
+            <div class="count mono">${state.online.maxPlayers}</div>
+            <button id="inc">+</button>
+          </div>
+          <p style="text-align:center;color:var(--text-muted);font-size:12px;font-weight:600;margin:6px 0 14px;">total seats (mix of people and 🤖 Computers)</p>
+          <button class="btn btn-gold" id="createBtn">Create Room</button>
+        </div>
+        <div class="panel">
+          <h2>Join a Room</h2>
+          <div class="name-row">
+            <div class="dot"></div>
+            <input value="${escapeAttr(state.online.joinCodeInput)}" placeholder="4-letter room code" id="joinCode" class="name-input" style="text-transform:uppercase;" />
+          </div>
+          <button class="btn btn-outline" id="joinBtn">Join Room</button>
+        </div>
+        ${state.online.error ? `<p style="color:var(--brick);font-weight:700;font-size:13px;text-align:center;margin-top:10px;">${escapeHtml(state.online.error)}</p>` : ""}
+        <div class="rules-toggle">
+          <button id="backBtn">← Back</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("onlineName").oninput = (e)=>{ state.online.myName = e.target.value; };
+  document.getElementById("dec").onclick = ()=>{ if(state.online.maxPlayers>2){ state.online.maxPlayers--; render(); } };
+  document.getElementById("inc").onclick = ()=>{ if(state.online.maxPlayers<8){ state.online.maxPlayers++; render(); } };
+  document.getElementById("createBtn").onclick = createRoom;
+  document.getElementById("joinCode").oninput = (e)=>{ state.online.joinCodeInput = e.target.value; };
+  document.getElementById("joinBtn").onclick = joinRoom;
+  document.getElementById("backBtn").onclick = ()=>{ state.screen = "home"; render(); };
+}
+
+function renderLobby(){
+  const seats = state.online.seats;
+  const rows = seats.map((s,i)=>{
+    let label, action = "";
+    if(s.clientId && !s.isCPU){
+      label = escapeHtml(s.name) + (s.clientId===state.online.clientId ? " (you)" : "");
+    } else if(s.isCPU){
+      label = "🤖 Computer";
+      if(state.online.isHost) action = `<button class="btn-small btn-outline" data-unset-cpu="${i}">Remove</button>`;
+    } else {
+      label = "Waiting for player…";
+      if(state.online.isHost) action = `<button class="btn-small btn-outline" data-set-cpu="${i}">Fill with 🤖</button>`;
+    }
+    return `<div class="scoreboard-row"><span>${label}</span><span>${action}</span></div>`;
+  }).join("");
+  const allFilled = seats.length>0 && seats.every(s=>s.clientId || s.isCPU);
+
+  app.innerHTML = `
+    <div class="screen">
+      <div class="wrap">
+        ${miniLogo()}
+        <div class="panel" style="text-align:center;">
+          <h2>Room Code</h2>
+          <div class="count mono" style="font-size:36px;letter-spacing:.1em;">${state.online.code||""}</div>
+          <p style="color:var(--text-muted);font-size:13px;font-weight:600;margin-top:6px;">Share this code — everyone else taps "Play Online" → "Join a Room".</p>
+        </div>
+        <div class="panel">
+          <h2>Players</h2>
+          ${rows}
+        </div>
+        ${state.online.isHost
+          ? `<button class="btn btn-gold" id="startOnlineBtn" ${allFilled?'':'disabled'}>${allFilled?'Deal &amp; Start':'Waiting for all seats to fill…'}</button>`
+          : `<p style="text-align:center;color:var(--text-muted);font-weight:700;">Waiting for the host to start the game…</p>`}
+        <div class="rules-toggle">
+          <button id="leaveBtn">Leave Room</button>
+        </div>
+      </div>
+    </div>
+  `;
+  if(state.online.isHost){
+    document.querySelectorAll("[data-set-cpu]").forEach(b=>{ b.onclick = ()=>setSeatCPU(parseInt(b.dataset.setCpu), true); });
+    document.querySelectorAll("[data-unset-cpu]").forEach(b=>{ b.onclick = ()=>setSeatCPU(parseInt(b.dataset.unsetCpu), false); });
+    const startBtn = document.getElementById("startOnlineBtn");
+    if(startBtn) startBtn.onclick = startOnlineGame;
+  }
+  document.getElementById("leaveBtn").onclick = leaveOnlineRoom;
 }
 
 function renderSetup(){
@@ -1062,6 +1471,145 @@ function renderPlay(){
   document.getElementById("coreCardEl").onclick = insertCoreIntoBuilder;
 }
 
+/* Online equivalent of renderPlay(): every phone always renders itself, but
+   only shows the interactive builder/hand/action-bar when it's actually this
+   phone's turn. Otherwise it shows a read-only board plus your own hand (so
+   you can plan ahead) while you wait. Other players' hands are never shown —
+   only their card/wildcard counts. */
+function renderOnlinePlay(){
+  const turnPlayer = currentPlayer();
+  const isMyTurn = state.online.mySeat === state.currentPlayer;
+  const me = state.players[state.online.mySeat];
+
+  // Host-only: schedule the CPU's move if it's a computer's turn. Reuses the
+  // same state._aiScheduled / state._aiTurnPlayer guard as local pass-and-play
+  // mode (see the comment inside renderGate()) so a duplicate schedule from
+  // playAITurn's intermediate showToast() render can't starve the next
+  // player's turn.
+  if(state.online.isHost && turnPlayer.isCPU){
+    if(!state._aiScheduled && state._aiTurnPlayer !== state.currentPlayer){
+      state._aiScheduled = true;
+      const scheduledPlayer = state.currentPlayer;
+      setTimeout(()=>{
+        state._aiScheduled = false;
+        if(state.mode === "online" && state.currentPlayer === scheduledPlayer){
+          playAITurn();
+        }
+      }, 650);
+    }
+  }
+
+  const coreClass = "core-card" + (state.core.kind!=="letter" ? " wild-core" : "");
+  const opponents = state.players
+    .map((pl,i)=>({pl,i}))
+    .filter(({i})=>i !== state.online.mySeat)
+    .map(({pl})=>`<span><b>${escapeHtml(pl.name)}</b> ${pl.hand.length}🎴 ${pl.wildcards.length}🃏</span>`)
+    .join("&nbsp;&nbsp;·&nbsp;&nbsp;");
+
+  let mainZone;
+  if(isMyTurn){
+    const animClass = state.shakeWord ? " shake" : (state.successWord ? " success" : "");
+    const sparkles = state.successWord ? ["✨","🌈","⭐","💫"].map((s,i)=>`<span class="success-sparkle" style="left:${10+i*25}%;top:-6px;animation-delay:${i*0.05}s;">${s}</span>`).join("") : "";
+    const builderHtml = state.builder.length===0
+      ? `<div class="builder-row empty"></div>`
+      : `<div class="builder-row${animClass}">${sparkles}${state.builder.map(c=>{
+          return `<div class="btile ${c.kind!=='letter'?'wild-tile':''} ${state.builder.indexOf(c)===state.coreInsertedAt?'core-tile':''}">${displayLetter(c)}</div>`;
+        }).join("")}</div>`;
+
+    const allHandCards = [...me.hand, ...me.wildcards];
+    const handHtml = allHandCards.map(c=>{
+      const disabled = cardInBuilder(c);
+      return `<div class="htile ${c.kind!=='letter'?'wild':''} ${disabled?'used':''}" data-card="${c.id}">${c.kind==='letter'?c.letter:'✨'}</div>`;
+    }).join("");
+
+    const submitDisabled = !canSubmit() || state.shakeWord || state.successWord || state.coreShake;
+    const currentLen = state.builder.length;
+    const bonus = bonusDrawAmount(currentLen);
+    const bonusHint = currentLen >= 3
+      ? `<p style="font-size:11px;color:var(--violet);font-weight:700;margin-top:4px;">${bonus>0 ? ("Bonus: draw " + bonus + " card" + (bonus===1?"":"s") + " on play") : "3-letter word — no bonus draw"}</p>`
+      : "";
+    const dictHint = (currentLen >= 3 && state.coreInsertedAt !== -1)
+      ? (isValidWord(wordString())
+          ? `<p style="font-size:11px;color:var(--sage);font-weight:700;margin-top:4px;">✓ "${escapeHtml(wordString())}" is in the dictionary</p>`
+          : `<p style="font-size:11px;color:var(--brick);font-weight:700;margin-top:4px;">✗ "${escapeHtml(wordString())}" isn't in the dictionary</p>`)
+      : "";
+
+    mainZone = `
+      <div class="builder-zone">
+        <div class="row-header">
+          <h2>Your Word</h2>
+          <div class="btn-row">
+            <button class="btn btn-outline" id="undoBtn" ${state.builder.length===0?'disabled':''}>Undo</button>
+          </div>
+        </div>
+        ${builderHtml}
+        ${dictHint}
+        ${bonusHint}
+      </div>
+      <div class="hand-zone">
+        <h2>Hand &amp; Wildcards (${me.wildcards.length}/2)</h2>
+        <div class="hand-row">${handHtml}</div>
+      </div>
+      <div class="action-bar">
+        <button class="btn btn-gold" id="submitBtn" ${submitDisabled?'disabled':''}>Play Word (${wordString()||'—'})</button>
+        <button class="btn btn-outline" id="drawBtn" ${me.wildcards.length>=2?'disabled':''}>Draw a Wildcard${me.wildcards.length>=2?' (full: 2/2)':''}</button>
+      </div>
+    `;
+  } else {
+    const allHandCards = [...me.hand, ...me.wildcards];
+    const handHtml = allHandCards.map(c=>`<div class="htile ${c.kind!=='letter'?'wild':''}">${c.kind==='letter'?c.letter:'✨'}</div>`).join("");
+    mainZone = `
+      <div class="gate" style="padding:24px 10px;">
+        <div class="thread-icon">${turnPlayer.isCPU ? "🤖" : "⏳"}</div>
+        <h2>${turnPlayer.isCPU ? (escapeHtml(turnPlayer.name) + " is thinking…") : ("Waiting for " + escapeHtml(turnPlayer.name) + "…")}</h2>
+      </div>
+      <div class="hand-zone">
+        <h2>Your Hand &amp; Wildcards (${me.wildcards.length}/2)</h2>
+        <div class="hand-row">${handHtml}</div>
+      </div>
+    `;
+  }
+
+  app.innerHTML = `
+    <div class="screen play-screen">
+      <div class="wrap">
+        ${miniLogo()}
+        <div class="board-top">
+          <div class="who">${escapeHtml(turnPlayer.name)}'s turn</div>
+          <div class="deck-count">Deck: ${state.deck.length}<br/>Discard: ${state.discard.length}</div>
+        </div>
+        <div class="score-strip">${state.players.map(pl=>`<b>${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;")} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
+        <div class="score-strip" style="margin-top:-4px;">${opponents}</div>
+
+        <div class="core-zone">
+          <div class="core-label">Core Card${isMyTurn ? " · tap to insert" : ""}</div>
+          <div class="${coreClass}" id="coreCardEl" role="button">${displayLetter(state.core)}</div>
+        </div>
+
+        ${mainZone}
+      </div>
+    </div>
+    ${state.pendingWildAssign ? renderWildPicker() : ""}
+    ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
+  `;
+
+  if(isMyTurn){
+    document.querySelectorAll("[data-card]").forEach(el=>{
+      el.onclick = ()=>{
+        const id = parseInt(el.dataset.card);
+        const allHandCards = [...me.hand, ...me.wildcards];
+        const card = allHandCards.find(c=>c.id===id);
+        if(!card || cardInBuilder(card)) return;
+        addHandCardToBuilder(card);
+      };
+    });
+    document.getElementById("undoBtn").onclick = removeLastFromBuilder;
+    document.getElementById("submitBtn").onclick = attemptSubmit;
+    document.getElementById("drawBtn").onclick = drawCard;
+    document.getElementById("coreCardEl").onclick = insertCoreIntoBuilder;
+  }
+}
+
 function renderWildPicker(){
   const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
   return `
@@ -1094,6 +1642,8 @@ function winnerSparkleField(){
 
 function renderRoundEnd(){
   const lr = state.lastRound;
+  const isOnline = state.mode === "online";
+  const canAdvance = !isOnline || state.online.isHost;
   app.innerHTML = `
     ${winnerSparkleField()}
     <div class="screen">
@@ -1107,20 +1657,27 @@ function renderRoundEnd(){
           ${scoreboardRows()}
         </div>
         <p style="color:var(--text-muted);font-size:13px;font-weight:600;margin:14px 0 0;">First to ${WINNING_SCORE} wins the game.</p>
-        <button class="btn btn-gold" id="nextRoundBtn" style="margin-top:16px;">Next Round</button>
+        ${canAdvance
+          ? `<button class="btn btn-gold" id="nextRoundBtn" style="margin-top:16px;">Next Round</button>`
+          : `<p style="text-align:center;color:var(--text-muted);font-weight:700;margin-top:16px;">Waiting for the host to start the next round…</p>`}
       </div>
     </div>
   `;
-  document.getElementById("nextRoundBtn").onclick = ()=>{
-    dealRound();
-    state.currentPlayer = state.nextStarter;
-    state.lastRound = null;
-    state.screen = "gate";
-    render();
-  };
+  if(canAdvance){
+    document.getElementById("nextRoundBtn").onclick = ()=>{
+      dealRound();
+      state.currentPlayer = state.nextStarter;
+      state.lastRound = null;
+      state.screen = isOnline ? "onlinePlay" : "gate";
+      syncOnline();
+      render();
+    };
+  }
 }
 
 function renderGameOver(){
+  const isOnline = state.mode === "online";
+  const canAdvance = !isOnline || state.online.isHost;
   app.innerHTML = `
     ${winnerSparkleField()}
     <div class="screen">
@@ -1133,14 +1690,32 @@ function renderGameOver(){
           <h2>Final Scores</h2>
           ${scoreboardRows()}
         </div>
-        <button class="btn btn-gold" id="againBtn" style="margin-top:16px;">New Game</button>
+        ${canAdvance
+          ? `<button class="btn btn-gold" id="againBtn" style="margin-top:16px;">New Game</button>`
+          : `<p style="text-align:center;color:var(--text-muted);font-weight:700;margin-top:16px;">Waiting for the host to start a new game…</p>`}
+        ${isOnline ? `<div class="rules-toggle"><button id="leaveBtn2">Leave Room</button></div>` : ""}
       </div>
     </div>
   `;
-  document.getElementById("againBtn").onclick = ()=>{
-    state = { ...state, screen:"setup", builder:[], lastRound:null, gameWinner:null };
-    render();
-  };
+  if(canAdvance){
+    document.getElementById("againBtn").onclick = ()=>{
+      if(isOnline){
+        state.players.forEach(pl=>{ pl.score = 0; });
+        state.gameWinner = null;
+        dealRound();
+        state.currentPlayer = 0;
+        state.screen = "onlinePlay";
+        syncOnline();
+        render();
+      } else {
+        state = { ...state, screen:"setup", builder:[], lastRound:null, gameWinner:null };
+        render();
+      }
+    };
+  }
+  if(isOnline){
+    document.getElementById("leaveBtn2").onclick = leaveOnlineRoom;
+  }
 }
 
 /* delegate for dynamically-inserted modal buttons since they're re-rendered inside renderPlay's innerHTML string */
@@ -1156,6 +1731,7 @@ document.addEventListener("click", (e)=>{
 function escapeHtml(s){ return (s||"").replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function escapeAttr(s){ return escapeHtml(s); }
 
+tryResumeSession();
 render();
 </script>
 </body>
