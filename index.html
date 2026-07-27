@@ -350,14 +350,14 @@ const LETTER_DISTRIBUTION = {
    technically-inclined player could still inspect it via browser dev tools.
 */
 const firebaseConfig = {
-  apiKey: "AIzaSyDfj8D_WmpZHdy6U1TWkvOsXLciUFvU1QQ",
-  authDomain: "endlinkonline.firebaseapp.com",
-  projectId: "endlinkonline",
-  storageBucket: "endlinkonline.firebasestorage.app",
-  messagingSenderId: "183476461533",
-  appId: "1:183476461533:web:14338d4e1d7eb7cead6034"
+  apiKey: "REPLACE_WITH_YOUR_API_KEY",
+  authDomain: "REPLACE_WITH_YOUR_PROJECT.firebaseapp.com",
+  projectId: "REPLACE_WITH_YOUR_PROJECT",
+  storageBucket: "REPLACE_WITH_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "REPLACE_WITH_YOUR_SENDER_ID",
+  appId: "REPLACE_WITH_YOUR_APP_ID",
 };
-const FIREBASE_CONFIGURED = firebaseConfig.apiKey !== "REPLACE HERE";
+const FIREBASE_CONFIGURED = firebaseConfig.apiKey !== "REPLACE_WITH_YOUR_API_KEY";
 let db = null;
 if(FIREBASE_CONFIGURED){
   firebase.initializeApp(firebaseConfig);
@@ -986,8 +986,19 @@ function bonusDrawAmount(wordLength){
   return 0; // 3-letter word
 }
 
+/* In online mode, only two clients are ever allowed to drive a turn-action
+   function: the player whose turn it actually is, or the host acting on
+   behalf of a Computer player (playAITurn always runs on the host's phone).
+   Blocking anyone else here is what stops two phones from acting at once. */
+function onlineTurnAuthorized(){
+  if(state.mode !== "online") return true;
+  if(state.online.mySeat === state.currentPlayer) return true;
+  const cp = state.players[state.currentPlayer];
+  return !!(state.online.isHost && cp && cp.isCPU);
+}
+
 function attemptSubmit(){
-  if(state.mode === "online" && state.online.mySeat !== state.currentPlayer) return;
+  if(!onlineTurnAuthorized()) return;
   if(!canSubmit()) return;
   if(state.coreInsertedAt === -1){
     state.coreShake = true;
@@ -1102,7 +1113,7 @@ function commitWord(){
 }
 
 function drawCard(){
-  if(state.mode === "online" && state.online.mySeat !== state.currentPlayer) return;
+  if(!onlineTurnAuthorized()) return;
   const p = currentPlayer();
   if(p.wildcards.length >= 2){
     showToast("Wildcard loadout is full (2/2) — play a word instead.");
