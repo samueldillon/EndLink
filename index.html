@@ -192,7 +192,7 @@
     display:flex; align-items:center; gap:6px; padding:8px; flex-wrap:wrap;
     background:var(--panel-2); position:relative;
   }
-  .builder-row.empty::before{ content:"Tap letters below or the Core Card, to build your word"; color:var(--text-muted); font-size:12px; font-family:'Nunito',sans-serif; font-weight:600;}
+  .builder-row.empty::before{ content:"Tap letters below, then the Core Card, to build your word"; color:var(--text-muted); font-size:12px; font-family:'Nunito',sans-serif; font-weight:600;}
   .btile{
     width:44px; height:52px; border-radius:10px; background:var(--tile); color:var(--tile-ink);
     display:flex; align-items:center; justify-content:center; font-family:'Fredoka',sans-serif;
@@ -350,12 +350,12 @@ const LETTER_DISTRIBUTION = {
    technically-inclined player could still inspect it via browser dev tools.
 */
 const firebaseConfig = {
-  apiKey: "AIzaSyDfj8D_WmpZHdy6U1TWkvOsXLciUFvU1QQ",
-  authDomain: "endlinkonline.firebaseapp.com",
-  projectId: "endlinkonline",
-  storageBucket: "endlinkonline.firebasestorage.app",
-  messagingSenderId: "183476461533",
-  appId: "1:183476461533:web:14338d4e1d7eb7cead6034"
+  apiKey: "REPLACE_WITH_YOUR_API_KEY",
+  authDomain: "REPLACE_WITH_YOUR_PROJECT.firebaseapp.com",
+  projectId: "REPLACE_WITH_YOUR_PROJECT",
+  storageBucket: "REPLACE_WITH_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "REPLACE_WITH_YOUR_SENDER_ID",
+  appId: "REPLACE_WITH_YOUR_APP_ID",
 };
 const FIREBASE_CONFIGURED = firebaseConfig.apiKey !== "REPLACE_WITH_YOUR_API_KEY";
 let db = null;
@@ -689,9 +689,17 @@ function leaveOnlineRoom(){
   if(state.online.unsub){ state.online.unsub(); }
   localStorage.removeItem("endlink_online_session");
   state.mode = "local";
-  state.online = { code:null, clientId:null, mySeat:-1, isHost:false, seats:[], maxPlayers:4, myName:"", joinCodeInput:"", error:null, unsub:null };
+  state.online = { code:null, clientId:null, mySeat:-1, isHost:false, seats:[], maxPlayers:4, myName:"", joinCodeInput:"", error:null, unsub:null, fromInvite:false };
   state.screen = "home";
   render();
+}
+
+/* used from mid-game screens, where leaving can strand the other players
+   (especially if it's your turn) — a lobby/game-over "leave" doesn't need this */
+function confirmLeaveOnlineRoom(){
+  if(window.confirm("Leave this game? If it's your turn, the other players will be stuck waiting.")){
+    leaveOnlineRoom();
+  }
 }
 
 /* best-effort: if this phone already had a room open (e.g. the page was
@@ -1221,10 +1229,13 @@ function renderOnlineSetup(){
         </div>`}
         ${state.online.error ? `<p style="color:var(--brick);font-weight:700;font-size:13px;text-align:center;margin-top:10px;">${escapeHtml(state.online.error)}</p>` : ""}
         <div class="rules-toggle">
+          <button id="rulesBtn">How to play EndLink</button>
+          &nbsp;·&nbsp;
           <button id="backBtn">← Back</button>
         </div>
       </div>
     </div>
+    ${state.showRules ? renderRulesModal() : ""}
   `;
   document.getElementById("onlineName").oninput = (e)=>{ state.online.myName = e.target.value; };
   document.getElementById("joinCode").oninput = (e)=>{ state.online.joinCodeInput = e.target.value; };
@@ -1235,6 +1246,10 @@ function renderOnlineSetup(){
     document.getElementById("createBtn").onclick = createRoom;
   }
   document.getElementById("backBtn").onclick = ()=>{ state.online.fromInvite = false; state.screen = "home"; render(); };
+  document.getElementById("rulesBtn").onclick = ()=>{ state.showRules = true; render(); };
+  if(state.showRules){
+    document.getElementById("closeRulesBtn").onclick = ()=>{ state.showRules = false; render(); };
+  }
 }
 
 function renderLobby(){
@@ -1272,11 +1287,14 @@ function renderLobby(){
           ? `<button class="btn btn-gold" id="startOnlineBtn" ${allFilled?'':'disabled'}>${allFilled?'Deal &amp; Start':'Waiting for all seats to fill…'}</button>`
           : `<p style="text-align:center;color:var(--text-muted);font-weight:700;">Waiting for the host to start the game…</p>`}
         <div class="rules-toggle">
+          <button id="rulesBtn">How to play EndLink</button>
+          &nbsp;·&nbsp;
           <button id="leaveBtn">Leave Room</button>
         </div>
       </div>
     </div>
     ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
+    ${state.showRules ? renderRulesModal() : ""}
   `;
   if(state.online.isHost){
     document.querySelectorAll("[data-set-cpu]").forEach(b=>{ b.onclick = ()=>setSeatCPU(parseInt(b.dataset.setCpu), true); });
@@ -1285,6 +1303,10 @@ function renderLobby(){
     if(startBtn) startBtn.onclick = startOnlineGame;
   }
   document.getElementById("leaveBtn").onclick = leaveOnlineRoom;
+  document.getElementById("rulesBtn").onclick = ()=>{ state.showRules = true; render(); };
+  if(state.showRules){
+    document.getElementById("closeRulesBtn").onclick = ()=>{ state.showRules = false; render(); };
+  }
   document.getElementById("copyLinkBtn").onclick = ()=>{
     const link = buildInviteLink(state.online.code);
     if(navigator.clipboard && navigator.clipboard.writeText){
@@ -1334,6 +1356,8 @@ function renderSetup(){
 
         <div class="rules-toggle">
           <button id="rulesBtn">How to play EndLink</button>
+          &nbsp;·&nbsp;
+          <button id="backBtn">← Back</button>
         </div>
       </div>
     </div>
@@ -1349,6 +1373,7 @@ function renderSetup(){
   });
   document.getElementById("startBtn").onclick = startGame;
   document.getElementById("rulesBtn").onclick = ()=>{ state.showRules = true; render(); };
+  document.getElementById("backBtn").onclick = ()=>{ state.screen = "home"; render(); };
   if(state.showRules){
     document.getElementById("closeRulesBtn").onclick = ()=>{ state.showRules = false; render(); };
   }
@@ -1549,7 +1574,8 @@ function renderOnlinePlay(){
     }
   }
 
-  const coreClass = "core-card" + (state.core.kind!=="letter" ? " wild-core" : "");
+  const coreClass = "core-card" + (state.core.kind!=="letter" ? " wild-core" : "") + (state.coreShake ? " core-shake" : "");
+  const coreSparkles = state.coreShake ? ["✨","💫","⭐"].map((s,i)=>`<span class="core-sparkle" style="left:${15+i*30}%;top:-6px;animation-delay:${i*0.05}s;">${s}</span>`).join("") : "";
   const opponents = state.players
     .map((pl,i)=>({pl,i}))
     .filter(({i})=>i !== state.online.mySeat)
@@ -1642,15 +1668,28 @@ function renderOnlinePlay(){
 
         <div class="core-zone">
           <div class="core-label">Core Card${isMyTurn ? " · tap to insert" : ""}</div>
-          <div class="${coreClass}" id="coreCardEl" role="button">${displayLetter(state.core)}</div>
+          <div class="${coreClass}" id="coreCardEl" role="button">${coreSparkles}${displayLetter(state.core)}</div>
         </div>
 
         ${mainZone}
+
+        <div class="rules-toggle">
+          <button id="rulesBtn">How to play EndLink</button>
+          &nbsp;·&nbsp;
+          <button id="leaveGameBtn">Leave Game</button>
+        </div>
       </div>
     </div>
     ${state.pendingWildAssign ? renderWildPicker() : ""}
     ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
+    ${state.showRules ? renderRulesModal() : ""}
   `;
+
+  document.getElementById("leaveGameBtn").onclick = confirmLeaveOnlineRoom;
+  document.getElementById("rulesBtn").onclick = ()=>{ state.showRules = true; render(); };
+  if(state.showRules){
+    document.getElementById("closeRulesBtn").onclick = ()=>{ state.showRules = false; render(); };
+  }
 
   if(isMyTurn){
     document.querySelectorAll("[data-card]").forEach(el=>{
@@ -1719,9 +1758,13 @@ function renderRoundEnd(){
         ${canAdvance
           ? `<button class="btn btn-gold" id="nextRoundBtn" style="margin-top:16px;">Next Round</button>`
           : `<p style="text-align:center;color:var(--text-muted);font-weight:700;margin-top:16px;">Waiting for the host to start the next round…</p>`}
+        ${isOnline ? `<div class="rules-toggle"><button id="leaveBtn3">Leave Game</button></div>` : ""}
       </div>
     </div>
   `;
+  if(isOnline){
+    document.getElementById("leaveBtn3").onclick = leaveOnlineRoom;
+  }
   if(canAdvance){
     document.getElementById("nextRoundBtn").onclick = ()=>{
       dealRound();
