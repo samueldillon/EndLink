@@ -394,7 +394,7 @@ let state = {
   coreInsertedAt: -1,     // index in builder where core is inserted, -1 if not yet
   toast: null,
   pendingWildAssign: null, // {source:'hand'|'core', index}
-  lastRound: null,        // {winner, points, breakdown:[{name,value}]}
+  lastRound: null,        // {winner, points, breakdown:[{name,value}], word}
   nextStarter: 0,         // player index who starts the next round
   gameWinner: null,
   showRules: false,
@@ -1087,7 +1087,7 @@ function commitWord(){
       if(val > worstVal){ worstVal = val; worstIdx = idx; }
     });
     p.score += roundPoints;
-    state.lastRound = { winner: p.name, points: roundPoints, breakdown };
+    state.lastRound = { winner: p.name, points: roundPoints, breakdown, word };
     state.nextStarter = worstIdx;
 
     // Check every player's score, not just the one who emptied their hand —
@@ -1460,6 +1460,11 @@ function renderGate(){
 
 function renderPlay(){
   const p = currentPlayer();
+  const cardCounts = state.players
+    .map((pl,i)=>({pl,i}))
+    .filter(({i})=>i !== state.currentPlayer)
+    .map(({pl})=>`<span><b>${escapeHtml(pl.name)}</b> ${pl.hand.length}🎴 ${pl.wildcards.length}🃏</span>`)
+    .join("&nbsp;&nbsp;·&nbsp;&nbsp;");
   const coreClass = "core-card" + (state.core.kind!=="letter" ? " wild-core" : "") + (state.coreShake ? " core-shake" : "");
   const coreSparkles = state.coreShake ? ["✨","💫","⭐"].map((s,i)=>`<span class="core-sparkle" style="left:${15+i*30}%;top:-6px;animation-delay:${i*0.05}s;">${s}</span>`).join("") : "";
 
@@ -1498,6 +1503,7 @@ function renderPlay(){
           <div class="deck-count">Deck: ${state.deck.length}<br/>Discard: ${state.discard.length}</div>
         </div>
         <div class="score-strip">${state.players.map(pl=>`<b>${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;")} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
+        <div class="score-strip" style="margin-top:-4px;">${cardCounts}</div>
 
         <div class="core-zone">
           <div class="core-label">Core Card · tap to insert</div>
@@ -1738,6 +1744,17 @@ function winnerSparkleField(){
   return `<div class="winner-sparkles">${spans}</div>`;
 }
 
+function finalWordBlock(){
+  if(!state.lastPlay || !state.lastPlay.tiles || !state.lastPlay.tiles.length) return "";
+  const tiles = state.lastPlay.tiles.map(t => `<div class="btile ${t.wild ? 'wild-tile' : ''} ${t.core ? 'core-tile' : ''}">${escapeHtml(t.letter)}</div>`).join("");
+  return `
+    <div class="last-play-block">
+      <div class="last-play-label">Final word:</div>
+      <div class="last-play-row">${tiles}</div>
+    </div>
+  `;
+}
+
 function renderRoundEnd(){
   const lr = state.lastRound;
   const isOnline = state.mode === "online";
@@ -1749,6 +1766,7 @@ function renderRoundEnd(){
         ${miniLogo()}
         <div class="thread-icon">🌈</div>
         <h1>${escapeHtml(lr.winner)} wins the round!</h1>
+        ${finalWordBlock()}
         <p style="color:var(--text-muted);margin-bottom:20px;font-weight:600;">Hand emptied first — scores +${lr.points} from everyone else's leftover cards.</p>
         <div class="panel" style="text-align:left;">
           <h2>Scoreboard</h2>
@@ -1787,6 +1805,7 @@ function renderGameOver(){
         ${miniLogo()}
         <div class="thread-icon">🏆</div>
         <h1>${escapeHtml(state.gameWinner)} wins the game!</h1>
+        ${finalWordBlock()}
         <p style="color:var(--text-muted);margin-bottom:20px;font-weight:600;">First to reach ${WINNING_SCORE} points.</p>
         <div class="panel" style="text-align:left;">
           <h2>Final Scores</h2>
