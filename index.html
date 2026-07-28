@@ -122,6 +122,7 @@
   .board-top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
   .board-top .who{ font-family:'Baloo 2',cursive; font-size:20px; color:var(--ink); }
   .board-top .deck-count{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-muted); text-align:right; line-height:1.4;}
+  .deck-count-line{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-muted); text-align:center; margin-top:2px; margin-bottom:10px; letter-spacing:.02em; }
   .score-strip{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-muted); text-align:center; margin-bottom:10px; letter-spacing:.02em; }
   .cpu-toggle{ display:flex; align-items:center; gap:5px; font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-muted); font-weight:700; white-space:nowrap; }
   .cpu-toggle input{ width:15px; height:15px; accent-color:var(--violet); }
@@ -402,6 +403,121 @@ let state = {
 };
 
 const WINNING_SCORE = 50;
+
+/* --- Chimes & alerts --------------------------------------------------
+   Three distinct WebAudio chimes, all played on a single persistent
+   AudioContext that's unlocked by the player's very first tap on the page
+   (see the "unlockAudioOnce" listener below). Browsers only allow an
+   AudioContext to start/resume as a direct result of a user gesture — a
+   turn/round/game change arriving later via the Firestore listener isn't
+   one — so a fresh AudioContext created at that moment would stay silently
+   suspended forever. Reusing one that was already unlocked earlier
+   sidesteps that: once "running", it stays usable for any future sound.
+     - playTurnChime: two quick ascending notes — fired once per transition
+       into isMyTurn===true (see renderOnlinePlay)
+     - playRoundEndChime: a slightly longer three-note phrase — fired once
+       per transition into the roundEnd screen
+     - playGameEndChime: a four-note ascending fanfare — fired once per
+       transition into the gameOver screen
+   (edge-detection for the latter two lives in render(), via lastChimeScreen)
+------------------------------------------------------------------------- */
+let wasMyOnlineTurn = false;
+let lastChimeScreen = null;
+let titleFlashTimer = null;
+const ORIGINAL_TITLE = document.title;
+let sharedAudioCtx = null;
+
+function unlockAudioOnce(){
+  if(sharedAudioCtx) return;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if(!Ctx) return;
+  sharedAudioCtx = new Ctx();
+  // Some browsers still hand back a "suspended" context even from a real
+  // gesture until resume() is explicitly called on it.
+  if(sharedAudioCtx.state === "suspended") sharedAudioCtx.resume();
+  document.removeEventListener("pointerdown", unlockAudioOnce);
+  document.removeEventListener("keydown", unlockAudioOnce);
+}
+document.addEventListener("pointerdown", unlockAudioOnce);
+document.addEventListener("keydown", unlockAudioOnce);
+
+// notes: array of {freq, at, dur}. `at` and `dur` are in seconds, relative
+// to when playback starts. `gain` is peak volume (0-1).
+function playNotes(notes, gain){
+  try{
+    if(!sharedAudioCtx) return; // no gesture has unlocked audio yet
+    const ctx = sharedAudioCtx;
+    const schedule = ()=>{
+      const now = ctx.currentTime;
+      notes.forEach(({freq, at, dur})=>{
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const start = now + at;
+        g.gain.setValueAtTime(0, start);
+        g.gain.linearRampToValueAtTime(gain, start + Math.min(0.02, dur/4));
+        g.gain.linearRampToValueAtTime(0, start + dur);
+        osc.connect(g).connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + dur + 0.02);
+      });
+    };
+    if(ctx.state === "suspended") ctx.resume().then(schedule);
+    else schedule();
+  }catch(e){ /* audio not available — chime is best-effort */ }
+}
+
+function playTurnChime(){
+  // two quick ascending notes (C6, E6)
+  playNotes([
+    { freq: 523.25, at: 0,    dur: 0.22 },
+    { freq: 659.25, at: 0.14, dur: 0.22 },
+  ], 0.2);
+}
+
+function playRoundEndChime(){
+  // three-note rising phrase (E5, G5, C6) — a bit brighter/longer than the turn chime
+  playNotes([
+    { freq: 659.25, at: 0,    dur: 0.2  },
+    { freq: 783.99, at: 0.15, dur: 0.2  },
+    { freq: 1046.5, at: 0.30, dur: 0.32 },
+  ], 0.22);
+}
+
+function playGameEndChime(){
+  // four-note ascending fanfare (C5, E5, G5, C6), fuller and longer
+  playNotes([
+    { freq: 523.25,  at: 0,    dur: 0.22 },
+    { freq: 659.25,  at: 0.16, dur: 0.22 },
+    { freq: 783.99,  at: 0.32, dur: 0.22 },
+    { freq: 1046.50, at: 0.48, dur: 0.5  },
+  ], 0.24);
+}
+
+function vibrateForTurn(){
+  if(navigator.vibrate) navigator.vibrate([120, 60, 120]);
+}
+
+function startTitleFlash(){
+  stopTitleFlash();
+  let on = false;
+  titleFlashTimer = setInterval(()=>{
+    document.title = on ? ORIGINAL_TITLE : "🔔 Your turn!";
+    on = !on;
+  }, 900);
+}
+
+function stopTitleFlash(){
+  if(titleFlashTimer){ clearInterval(titleFlashTimer); titleFlashTimer = null; }
+  document.title = ORIGINAL_TITLE;
+}
+
+function notifyMyTurn(){
+  playTurnChime();
+  vibrateForTurn();
+  startTitleFlash();
+}
 
 // Returns the highest-scoring player who has reached WINNING_SCORE, or null.
 // Used both at round-end and after ordinary word plays, since a player's
@@ -973,6 +1089,15 @@ function removeLastFromBuilder(){
   render();
 }
 
+function shuffleHand(){
+  const p = state.mode === "online" ? state.players[state.online.mySeat] : currentPlayer();
+  for(let i = p.hand.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [p.hand[i], p.hand[j]] = [p.hand[j], p.hand[i]];
+  }
+  render();
+}
+
 function cardInBuilder(card){
   return state.builder.includes(card);
 }
@@ -1150,6 +1275,11 @@ function advanceTurn(){
 const app = document.getElementById("app");
 
 function render(){
+  if(state.screen !== lastChimeScreen){
+    if(state.screen === "roundEnd") playRoundEndChime();
+    else if(state.screen === "gameOver") playGameEndChime();
+    lastChimeScreen = state.screen;
+  }
   if(state.screen === "home") return renderHome();
   if(state.screen === "onlineSetup") return renderOnlineSetup();
   if(state.screen === "lobby") return renderLobby();
@@ -1183,11 +1313,19 @@ function renderHome(){
           <button class="btn btn-gold" id="localBtn" style="margin-bottom:12px;">Pass &amp; Play — one device</button>
           <button class="btn btn-outline" id="onlineBtn">Play Online — everyone on their own phone</button>
         </div>
+        <div class="rules-toggle">
+          <button id="rulesBtn">How to play EndLink</button>
+        </div>
       </div>
     </div>
+    ${state.showRules ? renderRulesModal() : ""}
   `;
   document.getElementById("localBtn").onclick = ()=>{ state.mode = "local"; state.screen = "setup"; render(); };
   document.getElementById("onlineBtn").onclick = ()=>{ state.mode = "online"; state.screen = "onlineSetup"; render(); };
+  document.getElementById("rulesBtn").onclick = ()=>{ state.showRules = true; render(); };
+  if(state.showRules){
+    document.getElementById("closeRulesBtn").onclick = ()=>{ state.showRules = false; render(); };
+  }
 }
 
 function renderOnlineSetup(){
@@ -1500,10 +1638,7 @@ function renderPlay(){
         ${miniLogo()}
         <div class="board-top">
           <div class="who">${escapeHtml(p.name)}'s turn</div>
-          <div class="deck-count">Deck: ${state.deck.length}<br/>Discard: ${state.discard.length}</div>
         </div>
-        <div class="score-strip">${state.players.map(pl=>`<b>${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;")} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
-        <div class="score-strip" style="margin-top:-4px;">${cardCounts}</div>
 
         <div class="core-zone">
           <div class="core-label">Core Card · tap to insert</div>
@@ -1514,13 +1649,14 @@ function renderPlay(){
         <div class="builder-zone">
           <div class="row-header">
             <h2>Your Word</h2>
-            <div class="btn-row">
-              <button class="btn btn-outline" id="undoBtn" ${state.builder.length===0?'disabled':''}>Undo</button>
-            </div>
           </div>
           ${builderHtml}
           ${dictHint}
           ${bonusHint}
+          <div class="btn-row" style="justify-content:space-between;margin-top:8px;">
+            <button class="btn btn-outline" id="shuffleBtn" ${p.hand.length<2?'disabled':''}>Shuffle</button>
+            <button class="btn btn-outline" id="undoBtn" ${state.builder.length===0?'disabled':''}>Undo</button>
+          </div>
         </div>
 
         <div class="hand-zone">
@@ -1532,6 +1668,10 @@ function renderPlay(){
           <button class="btn btn-gold" id="submitBtn" ${submitDisabled?'disabled':''}>Play Word (${wordString()||'—'})</button>
           <button class="btn btn-outline" id="drawBtn" ${p.wildcards.length>=2?'disabled':''}>Draw a Wildcard${p.wildcards.length>=2?' (full: 2/2)':''}</button>
         </div>
+
+        <div class="score-strip" style="margin-top:16px;">${state.players.map(pl=>`<b>${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;")} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
+        <div class="score-strip" style="margin-top:-4px;">${cardCounts}</div>
+        <div class="deck-count-line">Deck: ${state.deck.length} &nbsp;·&nbsp; Discard: ${state.discard.length}</div>
       </div>
     </div>
     ${state.pendingWildAssign ? renderWildPicker() : ""}
@@ -1547,6 +1687,7 @@ function renderPlay(){
     };
   });
   document.getElementById("undoBtn").onclick = removeLastFromBuilder;
+  document.getElementById("shuffleBtn").onclick = shuffleHand;
   document.getElementById("submitBtn").onclick = attemptSubmit;
   document.getElementById("drawBtn").onclick = drawCard;
   document.getElementById("coreCardEl").onclick = insertCoreIntoBuilder;
@@ -1561,6 +1702,13 @@ function renderOnlinePlay(){
   const turnPlayer = currentPlayer();
   const isMyTurn = state.online.mySeat === state.currentPlayer;
   const me = state.players[state.online.mySeat];
+
+  if(isMyTurn && !wasMyOnlineTurn){
+    notifyMyTurn();
+  } else if(!isMyTurn){
+    stopTitleFlash();
+  }
+  wasMyOnlineTurn = isMyTurn;
 
   // Host-only: schedule the CPU's move if it's a computer's turn. Reuses the
   // same state._aiScheduled / state._aiTurnPlayer guard as local pass-and-play
@@ -1620,13 +1768,14 @@ function renderOnlinePlay(){
       <div class="builder-zone">
         <div class="row-header">
           <h2>Your Word</h2>
-          <div class="btn-row">
-            <button class="btn btn-outline" id="undoBtn" ${state.builder.length===0?'disabled':''}>Undo</button>
-          </div>
         </div>
         ${builderHtml}
         ${dictHint}
         ${bonusHint}
+        <div class="btn-row" style="justify-content:space-between;margin-top:8px;">
+          <button class="btn btn-outline" id="shuffleBtn" ${me.hand.length<2?'disabled':''}>Shuffle</button>
+          <button class="btn btn-outline" id="undoBtn" ${state.builder.length===0?'disabled':''}>Undo</button>
+        </div>
       </div>
       <div class="hand-zone">
         <h2>Hand &amp; Wildcards (${me.wildcards.length}/2)</h2>
@@ -1658,10 +1807,7 @@ function renderOnlinePlay(){
         ${miniLogo()}
         <div class="board-top">
           <div class="who">${escapeHtml(turnPlayer.name)}'s turn</div>
-          <div class="deck-count">Deck: ${state.deck.length}<br/>Discard: ${state.discard.length}</div>
         </div>
-        <div class="score-strip">${state.players.map(pl=>`<b>${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;")} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
-        <div class="score-strip" style="margin-top:-4px;">${opponents}</div>
 
         ${state.lastPlay ? `
           <div class="last-play-block">
@@ -1678,6 +1824,10 @@ function renderOnlinePlay(){
         </div>
 
         ${mainZone}
+
+        <div class="score-strip" style="margin-top:16px;">${state.players.map(pl=>`<b>${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;")} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
+        <div class="score-strip" style="margin-top:-4px;">${opponents}</div>
+        <div class="deck-count-line">Deck: ${state.deck.length} &nbsp;·&nbsp; Discard: ${state.discard.length}</div>
 
         <div class="rules-toggle">
           <button id="rulesBtn">How to play EndLink</button>
@@ -1708,6 +1858,7 @@ function renderOnlinePlay(){
       };
     });
     document.getElementById("undoBtn").onclick = removeLastFromBuilder;
+    document.getElementById("shuffleBtn").onclick = shuffleHand;
     document.getElementById("submitBtn").onclick = attemptSubmit;
     document.getElementById("drawBtn").onclick = drawCard;
     document.getElementById("coreCardEl").onclick = insertCoreIntoBuilder;
@@ -1847,6 +1998,13 @@ document.addEventListener("click", (e)=>{
   if(e.target.dataset && e.target.dataset.wildback !== undefined){
     cancelWildAssign();
   }
+});
+
+/* Stop flashing the title the moment the player actually looks at the tab,
+   even if they haven't submitted a word yet. */
+window.addEventListener("focus", stopTitleFlash);
+document.addEventListener("visibilitychange", ()=>{
+  if(!document.hidden) stopTitleFlash();
 });
 
 function escapeHtml(s){ return (s||"").replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
