@@ -112,6 +112,24 @@
   /* ---------- pass-device gate ---------- */
   .gate{ text-align:center; padding:60px 20px; }
   .gate .thread-icon{ font-size:52px; margin-bottom:18px; }
+  .gate .thread-icon.waiting-pulse{ animation:waitingPulse 1.8s ease-in-out infinite; }
+  @keyframes waitingPulse{
+    0%,100%{ transform:scale(1); opacity:.85; }
+    50%{ transform:scale(1.12); opacity:1; }
+  }
+  .waiting-label{ opacity:.9; animation:waitingFade 1.8s ease-in-out infinite; }
+  @keyframes waitingFade{
+    0%,100%{ opacity:.75; }
+    50%{ opacity:1; }
+  }
+  .waiting-dots span{ display:inline-block; animation:waitingDot 1.4s infinite; opacity:.2; }
+  .waiting-dots span:nth-child(1){ animation-delay:0s; }
+  .waiting-dots span:nth-child(2){ animation-delay:.2s; }
+  .waiting-dots span:nth-child(3){ animation-delay:.4s; }
+  @keyframes waitingDot{
+    0%,60%,100%{ opacity:.2; }
+    30%{ opacity:1; }
+  }
   .gate h2{ font-size:24px; margin-bottom:8px; color:var(--text-muted); text-transform:none; letter-spacing:0; font-family:'Nunito',sans-serif; font-weight:700; }
   .gate p{ color:var(--text-muted); font-size:14px; margin-bottom:26px; font-weight:600; }
   .last-play-block{ margin:0 0 26px; }
@@ -234,6 +252,19 @@
   .loadout-chip.spent{ opacity:.35; text-decoration:line-through; }
 
   .action-bar{ display:flex; gap:8px; margin-top:10px; }
+
+  .status-toggle-row{ display:flex; gap:8px; margin-top:16px; }
+  .status-chip{
+    flex:1; background:#FFFFFFCC; color:var(--text-muted); border:2px solid var(--border);
+    border-radius:999px; padding:9px 14px; font-size:12px; font-weight:800;
+    font-family:'IBM Plex Mono',monospace; letter-spacing:.02em;
+  }
+  .status-chip:active{ transform:scale(.97); }
+  .status-panel{
+    background:var(--panel-2); border:1px solid var(--border); border-radius:14px;
+    padding:10px 12px; margin-top:8px;
+  }
+  .status-panel .score-strip, .status-panel .deck-count-line{ margin-bottom:0; }
 
   .toast{
     position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
@@ -400,10 +431,24 @@ let state = {
   nextStarter: 0,         // player index who starts the next round
   gameWinner: null,
   showRules: false,
+  uiStatusOpen: false,    // local-only UI toggle — never synced online
+  uiScoresOpen: false,    // local-only UI toggle — never synced online
   _aiTurnPlayer: -1, // index of the player whose AI turn is currently mid-execution, or -1
 };
 
 const WINNING_SCORE = 50;
+
+// One distinct color per player, assigned at game start (up to 8 players,
+// matching the app's existing 8-color palette). Stored on the player object
+// itself so it round-trips through Firestore sync for online games.
+const PLAYER_COLORS = [
+  "var(--pink)", "var(--sky)", "var(--mint)", "var(--orange)",
+  "var(--violet)", "var(--brick)", "var(--yellow)", "var(--sage)",
+];
+
+function playerColor(pl){
+  return (pl && pl.color) || "var(--violet)";
+}
 
 /* --- Chimes & alerts --------------------------------------------------
    Three distinct WebAudio chimes, all played on a single persistent
@@ -576,6 +621,7 @@ function startGame(){
       wildcards: [],
       score: 0,
       isCPU,
+      color: PLAYER_COLORS[i % PLAYER_COLORS.length],
     });
   }
   state.lastRound = null;
@@ -717,12 +763,13 @@ function startOnlineGame(){
   state.players = [];
   let cpuSeen = 0;
   seats.forEach((s,i)=>{
+    const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
     if(s.isCPU){
       cpuSeen++;
       const defaultName = cpuSeen === 1 ? "Computer" : ("Computer " + cpuSeen);
-      state.players.push({ name: defaultName, hand:[], wildcards:[], score:0, isCPU:true });
+      state.players.push({ name: defaultName, hand:[], wildcards:[], score:0, isCPU:true, color });
     } else {
-      state.players.push({ name: s.name || ("Player " + (i+1)), hand:[], wildcards:[], score:0, isCPU:false });
+      state.players.push({ name: s.name || ("Player " + (i+1)), hand:[], wildcards:[], score:0, isCPU:false, color });
     }
   });
   state.lastRound = null;
@@ -1275,6 +1322,42 @@ function advanceTurn(){
 
 const app = document.getElementById("app");
 
+function toggleStatusOpen(){
+  state.uiStatusOpen = !state.uiStatusOpen;
+  render();
+}
+
+function toggleScoresOpen(){
+  state.uiScoresOpen = !state.uiScoresOpen;
+  render();
+}
+
+function statusAndScoresBlock(cardCountsHtml){
+  const scoreLine = state.players.map(pl=>`<b style="color:${playerColor(pl)};">${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;");
+  return `
+    <div class="status-toggle-row">
+      <button class="status-chip" id="statusToggleBtn">Status ${state.uiStatusOpen ? "▲" : "▼"}</button>
+      <button class="status-chip" id="scoresToggleBtn">Scores ${state.uiScoresOpen ? "▲" : "▼"}</button>
+    </div>
+    ${state.uiStatusOpen ? `
+      <div class="status-panel">
+        <div class="score-strip" style="margin-bottom:6px;">${cardCountsHtml}</div>
+        <div class="deck-count-line" style="margin:0;">Deck: ${state.deck.length} &nbsp;·&nbsp; Discard: ${state.discard.length}</div>
+      </div>
+    ` : ""}
+    ${state.uiScoresOpen ? `
+      <div class="status-panel">
+        <div class="score-strip" style="margin:0;">${scoreLine} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
+      </div>
+    ` : ""}
+  `;
+}
+
+function wireStatusAndScoresToggles(){
+  document.getElementById("statusToggleBtn").onclick = toggleStatusOpen;
+  document.getElementById("scoresToggleBtn").onclick = toggleScoresOpen;
+}
+
 function render(){
   if(state.screen !== lastChimeScreen){
     if(state.screen === "roundEnd") playRoundEndChime();
@@ -1298,7 +1381,7 @@ function miniLogo(){
 
 function scoreboardRows(){
   const sorted = [...state.players].sort((a,b)=>b.score-a.score);
-  return sorted.map(pl=>`<div class="scoreboard-row"><span>${escapeHtml(pl.name)}</span><span class="pts mono">${pl.score}</span></div>`).join("");
+  return sorted.map(pl=>`<div class="scoreboard-row"><span><span style="color:${playerColor(pl)};">${escapeHtml(pl.name)}</span></span><span class="pts mono">${pl.score}</span></div>`).join("");
 }
 
 function renderHome(){
@@ -1544,7 +1627,7 @@ function renderGate(){
         <div class="wrap gate">
           ${miniLogo()}
           <div class="thread-icon">🤖</div>
-          <h2>${escapeHtml(p.name)} is thinking…</h2>
+          <h2 style="color:${playerColor(p)};">${escapeHtml(p.name)} is thinking…</h2>
           <p>Finding the best word to play.</p>
         </div>
       </div>
@@ -1579,7 +1662,7 @@ function renderGate(){
         ${miniLogo()}
         <div class="thread-icon">🦄</div>
         <h2>Pass the device to</h2>
-        <h1 style="font-size:34px;margin-bottom:18px;">${escapeHtml(p.name)}</h1>
+        <h1 style="font-size:34px;margin-bottom:18px;color:${playerColor(p)};">${escapeHtml(p.name)}</h1>
         ${state.lastPlay ? `
           <div class="last-play-block">
             <div class="last-play-label">${escapeHtml(state.lastPlay.by)} played</div>
@@ -1602,7 +1685,7 @@ function renderPlay(){
   const cardCounts = state.players
     .map((pl,i)=>({pl,i}))
     .filter(({i})=>i !== state.currentPlayer)
-    .map(({pl})=>`<span><b>${escapeHtml(pl.name)}</b> ${pl.hand.length}🎴 ${pl.wildcards.length}🃏</span>`)
+    .map(({pl})=>`<span><b style="color:${playerColor(pl)};">${escapeHtml(pl.name)}</b> ${pl.hand.length}🎴 ${pl.wildcards.length}🃏</span>`)
     .join("&nbsp;&nbsp;·&nbsp;&nbsp;");
   const coreClass = "core-card" + (state.core.kind!=="letter" ? " wild-core" : "") + (state.coreShake ? " core-shake" : "");
   const coreSparkles = state.coreShake ? ["✨","💫","⭐"].map((s,i)=>`<span class="core-sparkle" style="left:${15+i*30}%;top:-6px;animation-delay:${i*0.05}s;">${s}</span>`).join("") : "";
@@ -1639,7 +1722,7 @@ function renderPlay(){
       <div class="wrap">
         ${miniLogo()}
         <div class="board-top">
-          <div class="who">${escapeHtml(p.name)}'s turn</div>
+          <div class="who" style="color:${playerColor(p)};">${escapeHtml(p.name)}'s turn</div>
         </div>
 
         <div class="core-zone">
@@ -1670,9 +1753,7 @@ function renderPlay(){
           <button class="btn btn-outline" id="drawBtn" ${p.wildcards.length>=2?'disabled':''}>Draw a Wildcard${p.wildcards.length>=2?' (full: 2/2)':''}</button>
         </div>
 
-        <div class="score-strip" style="margin-top:16px;">${state.players.map(pl=>`<b>${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;")} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
-        <div class="score-strip" style="margin-top:-4px;">${cardCounts}</div>
-        <div class="deck-count-line">Deck: ${state.deck.length} &nbsp;·&nbsp; Discard: ${state.discard.length}</div>
+        ${statusAndScoresBlock(cardCounts)}
       </div>
     </div>
     ${state.pendingWildAssign ? renderWildPicker() : ""}
@@ -1692,6 +1773,7 @@ function renderPlay(){
   document.getElementById("submitBtn").onclick = attemptSubmit;
   document.getElementById("drawBtn").onclick = drawCard;
   document.getElementById("coreCardEl").onclick = insertCoreIntoBuilder;
+  wireStatusAndScoresToggles();
 }
 
 /* Online equivalent of renderPlay(): every phone always renders itself, but
@@ -1734,7 +1816,7 @@ function renderOnlinePlay(){
   const opponents = state.players
     .map((pl,i)=>({pl,i}))
     .filter(({i})=>i !== state.online.mySeat)
-    .map(({pl})=>`<span><b>${escapeHtml(pl.name)}</b> ${pl.hand.length}🎴 ${pl.wildcards.length}🃏</span>`)
+    .map(({pl})=>`<span><b style="color:${playerColor(pl)};">${escapeHtml(pl.name)}</b> ${pl.hand.length}🎴 ${pl.wildcards.length}🃏</span>`)
     .join("&nbsp;&nbsp;·&nbsp;&nbsp;");
 
   let mainZone;
@@ -1792,8 +1874,8 @@ function renderOnlinePlay(){
     const handHtml = allHandCards.map(c=>`<div class="htile ${c.kind!=='letter'?'wild':''}">${c.kind==='letter'?c.letter:'✨'}</div>`).join("");
     mainZone = `
       <div class="gate" style="padding:24px 10px;">
-        <div class="thread-icon">${turnPlayer.isCPU ? "🤖" : "⏳"}</div>
-        <h2>${turnPlayer.isCPU ? (escapeHtml(turnPlayer.name) + " is thinking…") : ("Waiting for " + escapeHtml(turnPlayer.name) + "…")}</h2>
+        <div class="thread-icon${turnPlayer.isCPU ? "" : " waiting-pulse"}">${turnPlayer.isCPU ? "🤖" : "⏳"}</div>
+        <h2 class="waiting-label" style="color:${playerColor(turnPlayer)};">${escapeHtml(turnPlayer.name)}${turnPlayer.isCPU ? " is thinking" : " is playing"}<span class="waiting-dots"><span>.</span><span>.</span><span>.</span></span></h2>
       </div>
       <div class="hand-zone">
         <h2>Your Hand &amp; Wildcards (${me.wildcards.length}/2)</h2>
@@ -1807,7 +1889,7 @@ function renderOnlinePlay(){
       <div class="wrap">
         ${miniLogo()}
         <div class="board-top">
-          <div class="who">${escapeHtml(turnPlayer.name)}'s turn</div>
+          <div class="who" style="color:${playerColor(turnPlayer)};">${escapeHtml(turnPlayer.name)}'s turn</div>
         </div>
 
         ${state.lastPlay ? `
@@ -1826,9 +1908,7 @@ function renderOnlinePlay(){
 
         ${mainZone}
 
-        <div class="score-strip" style="margin-top:16px;">${state.players.map(pl=>`<b>${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;")} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
-        <div class="score-strip" style="margin-top:-4px;">${opponents}</div>
-        <div class="deck-count-line">Deck: ${state.deck.length} &nbsp;·&nbsp; Discard: ${state.discard.length}</div>
+        ${statusAndScoresBlock(opponents)}
 
         <div class="rules-toggle">
           <button id="rulesBtn">How to play EndLink</button>
@@ -1844,6 +1924,7 @@ function renderOnlinePlay(){
 
   document.getElementById("leaveGameBtn").onclick = confirmLeaveOnlineRoom;
   document.getElementById("rulesBtn").onclick = ()=>{ state.showRules = true; render(); };
+  wireStatusAndScoresToggles();
   if(state.showRules){
     document.getElementById("closeRulesBtn").onclick = ()=>{ state.showRules = false; render(); };
   }
