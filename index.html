@@ -186,6 +186,7 @@
   /* builder */
   .row-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; gap:8px; }
   .row-header h2{ font-size:11px; color:var(--text-muted); font-family:'IBM Plex Mono',monospace; text-transform:uppercase; letter-spacing:.06em; margin:0; }
+  .word-status{ font-size:11px; font-weight:700; font-family:'IBM Plex Mono',monospace; text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .btn-tiny{ padding:5px 10px !important; font-size:11px !important; border-radius:999px; width:auto !important; }
   .builder-zone{ margin:6px 0 4px; }
   .builder-row{
@@ -1624,13 +1625,14 @@ function renderPlay(){
   const currentLen = state.builder.length;
   const bonus = bonusDrawAmount(currentLen);
   const bonusHint = currentLen >= 3
-    ? `<p style="font-size:11px;color:var(--violet);font-weight:700;margin-top:4px;">${bonus>0 ? ("Bonus: draw " + bonus + " card" + (bonus===1?"":"s") + " on play") : "3-letter word — no bonus draw"}</p>`
+    ? `<span style="color:var(--violet);">${bonus>0 ? ("Bonus: draw " + bonus + " card" + (bonus===1?"":"s")) : "No bonus draw"}</span>`
     : "";
   const dictHint = (currentLen >= 3 && state.coreInsertedAt !== -1)
     ? (isValidWord(wordString())
-        ? `<p style="font-size:11px;color:var(--sage);font-weight:700;margin-top:4px;">✓ "${escapeHtml(wordString())}" is in the dictionary</p>`
-        : `<p style="font-size:11px;color:var(--brick);font-weight:700;margin-top:4px;">✗ "${escapeHtml(wordString())}" isn't in the dictionary</p>`)
+        ? `<span style="color:var(--sage);">✓ In dictionary</span>`
+        : `<span style="color:var(--brick);">✗ Not in dictionary</span>`)
     : "";
+  const wordStatus = [dictHint, bonusHint].filter(Boolean).join(' &nbsp;·&nbsp; ');
 
   app.innerHTML = `
     <div class="screen play-screen">
@@ -1649,10 +1651,9 @@ function renderPlay(){
         <div class="builder-zone">
           <div class="row-header">
             <h2>Your Word</h2>
+            <div class="word-status">${wordStatus}</div>
           </div>
           ${builderHtml}
-          ${dictHint}
-          ${bonusHint}
           <div class="btn-row" style="justify-content:space-between;margin-top:8px;">
             <button class="btn btn-outline" id="shuffleBtn" ${p.hand.length<2?'disabled':''}>Shuffle</button>
             <button class="btn btn-outline" id="undoBtn" ${state.builder.length===0?'disabled':''}>Undo</button>
@@ -1756,22 +1757,22 @@ function renderOnlinePlay(){
     const currentLen = state.builder.length;
     const bonus = bonusDrawAmount(currentLen);
     const bonusHint = currentLen >= 3
-      ? `<p style="font-size:11px;color:var(--violet);font-weight:700;margin-top:4px;">${bonus>0 ? ("Bonus: draw " + bonus + " card" + (bonus===1?"":"s") + " on play") : "3-letter word — no bonus draw"}</p>`
+      ? `<span style="color:var(--violet);">${bonus>0 ? ("Bonus: draw " + bonus + " card" + (bonus===1?"":"s")) : "No bonus draw"}</span>`
       : "";
     const dictHint = (currentLen >= 3 && state.coreInsertedAt !== -1)
       ? (isValidWord(wordString())
-          ? `<p style="font-size:11px;color:var(--sage);font-weight:700;margin-top:4px;">✓ "${escapeHtml(wordString())}" is in the dictionary</p>`
-          : `<p style="font-size:11px;color:var(--brick);font-weight:700;margin-top:4px;">✗ "${escapeHtml(wordString())}" isn't in the dictionary</p>`)
+          ? `<span style="color:var(--sage);">✓ In dictionary</span>`
+          : `<span style="color:var(--brick);">✗ Not in dictionary</span>`)
       : "";
+    const wordStatus = [dictHint, bonusHint].filter(Boolean).join(' &nbsp;·&nbsp; ');
 
     mainZone = `
       <div class="builder-zone">
         <div class="row-header">
           <h2>Your Word</h2>
+          <div class="word-status">${wordStatus}</div>
         </div>
         ${builderHtml}
-        ${dictHint}
-        ${bonusHint}
         <div class="btn-row" style="justify-content:space-between;margin-top:8px;">
           <button class="btn btn-outline" id="shuffleBtn" ${me.hand.length<2?'disabled':''}>Shuffle</button>
           <button class="btn btn-outline" id="undoBtn" ${state.builder.length===0?'disabled':''}>Undo</button>
