@@ -260,11 +260,6 @@
     font-family:'IBM Plex Mono',monospace; letter-spacing:.02em;
   }
   .status-chip:active{ transform:scale(.97); }
-  .status-panel{
-    background:var(--panel-2); border:1px solid var(--border); border-radius:14px;
-    padding:10px 12px; margin-top:8px;
-  }
-  .status-panel .score-strip, .status-panel .deck-count-line{ margin-bottom:0; }
 
   .toast{
     position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
@@ -431,8 +426,8 @@ let state = {
   nextStarter: 0,         // player index who starts the next round
   gameWinner: null,
   showRules: false,
-  uiStatusOpen: false,    // local-only UI toggle — never synced online
-  uiScoresOpen: false,    // local-only UI toggle — never synced online
+  uiCardsOpen: false,     // local-only UI toggle — never synced online
+  uiScoreboardOpen: false, // local-only UI toggle — never synced online
   _aiTurnPlayer: -1, // index of the player whose AI turn is currently mid-execution, or -1
 };
 
@@ -1322,40 +1317,54 @@ function advanceTurn(){
 
 const app = document.getElementById("app");
 
-function toggleStatusOpen(){
-  state.uiStatusOpen = !state.uiStatusOpen;
-  render();
-}
-
-function toggleScoresOpen(){
-  state.uiScoresOpen = !state.uiScoresOpen;
-  render();
-}
-
-function statusAndScoresBlock(cardCountsHtml){
-  const scoreLine = state.players.map(pl=>`<b style="color:${playerColor(pl)};">${escapeHtml(pl.name)}</b> ${pl.score}`).join("&nbsp;&nbsp;·&nbsp;&nbsp;");
+function cardsAndScoreboardTriggers(){
   return `
     <div class="status-toggle-row">
-      <button class="status-chip" id="statusToggleBtn">Status ${state.uiStatusOpen ? "▲" : "▼"}</button>
-      <button class="status-chip" id="scoresToggleBtn">Scores ${state.uiScoresOpen ? "▲" : "▼"}</button>
+      <button class="status-chip" id="cardsBtn">Cards</button>
+      <button class="status-chip" id="scoreboardBtn">Scoreboard</button>
     </div>
-    ${state.uiStatusOpen ? `
-      <div class="status-panel">
-        <div class="score-strip" style="margin-bottom:6px;">${cardCountsHtml}</div>
-        <div class="deck-count-line" style="margin:0;">Deck: ${state.deck.length} &nbsp;·&nbsp; Discard: ${state.discard.length}</div>
-      </div>
-    ` : ""}
-    ${state.uiScoresOpen ? `
-      <div class="status-panel">
-        <div class="score-strip" style="margin:0;">${scoreLine} &nbsp;<span class="mono">(race to ${WINNING_SCORE})</span></div>
-      </div>
-    ` : ""}
   `;
 }
 
-function wireStatusAndScoresToggles(){
-  document.getElementById("statusToggleBtn").onclick = toggleStatusOpen;
-  document.getElementById("scoresToggleBtn").onclick = toggleScoresOpen;
+function cardsRows(players){
+  return players.map(pl=>`<div class="scoreboard-row"><span style="color:${playerColor(pl)};">${escapeHtml(pl.name)}</span><span class="pts mono">${pl.hand.length} Letters &nbsp;·&nbsp; ${pl.wildcards.length} Wildcards</span></div>`).join("");
+}
+
+function renderCardsModal(players){
+  return `
+    <div class="modal-backdrop" id="cardsBackdrop">
+      <div class="modal" style="max-width:420px;text-align:left;">
+        <h2 style="font-size:15px;text-transform:uppercase;letter-spacing:.06em;color:var(--violet);margin-bottom:14px;font-family:'Baloo 2',cursive;font-weight:700;">Cards</h2>
+        ${cardsRows(players)}
+        <p style="color:var(--text-muted);font-size:13px;font-weight:600;margin:14px 0 0;">Deck: ${state.deck.length} &nbsp;·&nbsp; Discard: ${state.discard.length}</p>
+        <button class="btn btn-gold" id="closeCardsBtn" style="margin-top:16px;">Got it</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderScoreboardModal(){
+  return `
+    <div class="modal-backdrop" id="scoreboardBackdrop">
+      <div class="modal" style="max-width:420px;text-align:left;">
+        <h2 style="font-size:15px;text-transform:uppercase;letter-spacing:.06em;color:var(--violet);margin-bottom:14px;font-family:'Baloo 2',cursive;font-weight:700;">Scoreboard</h2>
+        ${scoreboardRows()}
+        <p style="color:var(--text-muted);font-size:13px;font-weight:600;margin:14px 0 0;">Race to ${WINNING_SCORE} points.</p>
+        <button class="btn btn-gold" id="closeScoreboardBtn" style="margin-top:16px;">Got it</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireCardsAndScoreboardTriggers(){
+  document.getElementById("cardsBtn").onclick = ()=>{ state.uiCardsOpen = true; render(); };
+  document.getElementById("scoreboardBtn").onclick = ()=>{ state.uiScoreboardOpen = true; render(); };
+  if(state.uiCardsOpen){
+    document.getElementById("closeCardsBtn").onclick = ()=>{ state.uiCardsOpen = false; render(); };
+  }
+  if(state.uiScoreboardOpen){
+    document.getElementById("closeScoreboardBtn").onclick = ()=>{ state.uiScoreboardOpen = false; render(); };
+  }
 }
 
 function render(){
@@ -1685,8 +1694,7 @@ function renderPlay(){
   const cardCounts = state.players
     .map((pl,i)=>({pl,i}))
     .filter(({i})=>i !== state.currentPlayer)
-    .map(({pl})=>`<span><b style="color:${playerColor(pl)};">${escapeHtml(pl.name)}</b> ${pl.hand.length}🎴 ${pl.wildcards.length}🃏</span>`)
-    .join("&nbsp;&nbsp;·&nbsp;&nbsp;");
+    .map(({pl})=>pl);
   const coreClass = "core-card" + (state.core.kind!=="letter" ? " wild-core" : "") + (state.coreShake ? " core-shake" : "");
   const coreSparkles = state.coreShake ? ["✨","💫","⭐"].map((s,i)=>`<span class="core-sparkle" style="left:${15+i*30}%;top:-6px;animation-delay:${i*0.05}s;">${s}</span>`).join("") : "";
 
@@ -1753,11 +1761,18 @@ function renderPlay(){
           <button class="btn btn-outline" id="drawBtn" ${p.wildcards.length>=2?'disabled':''}>Draw a Wildcard${p.wildcards.length>=2?' (full: 2/2)':''}</button>
         </div>
 
-        ${statusAndScoresBlock(cardCounts)}
+        ${cardsAndScoreboardTriggers()}
+
+        <div class="rules-toggle">
+          <button id="rulesBtn">How to play EndLink</button>
+        </div>
       </div>
     </div>
     ${state.pendingWildAssign ? renderWildPicker() : ""}
     ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
+    ${state.showRules ? renderRulesModal() : ""}
+    ${state.uiCardsOpen ? renderCardsModal(cardCounts) : ""}
+    ${state.uiScoreboardOpen ? renderScoreboardModal() : ""}
   `;
 
   document.querySelectorAll("[data-card]").forEach(el=>{
@@ -1773,7 +1788,11 @@ function renderPlay(){
   document.getElementById("submitBtn").onclick = attemptSubmit;
   document.getElementById("drawBtn").onclick = drawCard;
   document.getElementById("coreCardEl").onclick = insertCoreIntoBuilder;
-  wireStatusAndScoresToggles();
+  wireCardsAndScoreboardTriggers();
+  document.getElementById("rulesBtn").onclick = ()=>{ state.showRules = true; render(); };
+  if(state.showRules){
+    document.getElementById("closeRulesBtn").onclick = ()=>{ state.showRules = false; render(); };
+  }
 }
 
 /* Online equivalent of renderPlay(): every phone always renders itself, but
@@ -1816,8 +1835,7 @@ function renderOnlinePlay(){
   const opponents = state.players
     .map((pl,i)=>({pl,i}))
     .filter(({i})=>i !== state.online.mySeat)
-    .map(({pl})=>`<span><b style="color:${playerColor(pl)};">${escapeHtml(pl.name)}</b> ${pl.hand.length}🎴 ${pl.wildcards.length}🃏</span>`)
-    .join("&nbsp;&nbsp;·&nbsp;&nbsp;");
+    .map(({pl})=>pl);
 
   let mainZone;
   if(isMyTurn){
@@ -1908,7 +1926,7 @@ function renderOnlinePlay(){
 
         ${mainZone}
 
-        ${statusAndScoresBlock(opponents)}
+        ${cardsAndScoreboardTriggers()}
 
         <div class="rules-toggle">
           <button id="rulesBtn">How to play EndLink</button>
@@ -1920,11 +1938,13 @@ function renderOnlinePlay(){
     ${state.pendingWildAssign ? renderWildPicker() : ""}
     ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
     ${state.showRules ? renderRulesModal() : ""}
+    ${state.uiCardsOpen ? renderCardsModal(opponents) : ""}
+    ${state.uiScoreboardOpen ? renderScoreboardModal() : ""}
   `;
 
   document.getElementById("leaveGameBtn").onclick = confirmLeaveOnlineRoom;
   document.getElementById("rulesBtn").onclick = ()=>{ state.showRules = true; render(); };
-  wireStatusAndScoresToggles();
+  wireCardsAndScoreboardTriggers();
   if(state.showRules){
     document.getElementById("closeRulesBtn").onclick = ()=>{ state.showRules = false; render(); };
   }
